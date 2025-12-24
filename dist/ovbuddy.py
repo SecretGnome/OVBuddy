@@ -11,6 +11,7 @@ import threading
 import io
 import socket
 import subprocess
+import uuid
 from datetime import datetime, timedelta
 
 # Optional imports for web server
@@ -56,7 +57,7 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.5"
+VERSION = "0.0.6"
 
 # --------------------------
 # CONFIGURATION
@@ -1060,8 +1061,8 @@ def render_qr_code(epd=None, test_mode=False):
             draw.text((x, ip_y), ip_label, font=font, fill=fg_color)
             ip_value_x = x + wifi_label_width  # Align with SSID value position
             
-            # Try to fit IP on one line
-            ip_text = ip
+            # Try to fit IP with port on one line
+            ip_text = f"{ip}:8080"
             try:
                 bbox = draw.textbbox((0, 0), ip_text, font=font)
                 text_width = bbox[2] - bbox[0]
@@ -1071,11 +1072,17 @@ def render_qr_code(epd=None, test_mode=False):
             if text_width <= text_area_width - 10 - (ip_value_x - x):
                 draw.text((ip_value_x, ip_y), ip_text, font=font, fill=fg_color)
             else:
-                # Split IP if too long
+                # Split IP if too long (try to keep port on same line as last part)
                 parts = ip.split('.')
                 if len(parts) == 4:
-                    draw.text((ip_value_x, ip_y), '.'.join(parts[:2]), font=font, fill=fg_color)
-                    draw.text((ip_value_x, ip_y + line_height), '.'.join(parts[2:]), font=font, fill=fg_color)
+                    # Try to fit first two parts on first line
+                    first_line = '.'.join(parts[:2])
+                    second_line = '.'.join(parts[2:]) + ':8080'
+                    draw.text((ip_value_x, ip_y), first_line, font=font, fill=fg_color)
+                    draw.text((ip_value_x, ip_y + line_height), second_line, font=font, fill=fg_color)
+                else:
+                    # Fallback: just show IP:port and let it wrap if needed
+                    draw.text((ip_value_x, ip_y), ip_text, font=font, fill=fg_color)
             
             # Draw URL below the QR code (centered)
             url_y = qr_y + qr_height + 5  # 5px below QR code
@@ -2105,6 +2112,141 @@ if FLASK_AVAILABLE:
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/shutdown', methods=['POST'])
+    def shutdown_display():
+        """Shutdown: Stop ovbuddy service, clear display, optionally display image"""
+        try:
+            # Check if file was uploaded
+            image_file = None
+            if 'image' in request.files:
+                file = request.files['image']
+                if file and file.filename:
+                    # Validate file extension
+                    if not file.filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        return jsonify({"success": False, "error": "Only JPG, JPEG, and PNG images are supported"}), 400
+                    
+                    # Save uploaded file temporarily
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    temp_dir = os.path.join(current_dir, "temp")
+                    os.makedirs(temp_dir, exist_ok=True)
+                    
+                    # Generate unique filename
+                    filename = f"shutdown_{uuid.uuid4().hex[:8]}.{file.filename.rsplit('.', 1)[1].lower()}"
+                    image_path = os.path.join(temp_dir, filename)
+                    file.save(image_path)
+                    image_file = image_path
+            
+            # Stop ovbuddy service (not ovbuddy-web)
+            stop_result = control_service('ovbuddy', 'stop')
+            if not stop_result.get('success'):
+                # Clean up uploaded file if service stop failed
+                if image_file and os.path.exists(image_file):
+                    try:
+                        os.remove(image_file)
+                    except:
+                        pass
+                return jsonify({
+                    "success": False,
+                    "error": f"Failed to stop ovbuddy service: {stop_result.get('error', 'Unknown error')}"
+                }), 500
+            
+            # Clear display and optionally display image
+            try:
+                if TEST_MODE:
+                    print("TEST MODE: Would clear display to white")
+                    if image_file:
+                        print(f"TEST MODE: Would display image: {image_file}")
+                else:
+                    # Initialize display
+                    epd = epd2in13_V4.EPD()
+                    epd.init()
+                    
+                    # Clear display to white
+                    print("Clearing display to white...")
+                    epd.Clear(0xFF)  # 0xFF = white
+                    
+                    # Display image if provided
+                    if image_file:
+                        print(f"Displaying image: {image_file}")
+                        try:
+                            # Load and process image
+                            img = Image.open(image_file)
+                            
+                            # Convert to RGB if needed
+                            if img.mode != 'RGB':
+                                img = img.convert('RGB')
+                            
+                            # Resize to fit display (maintain aspect ratio)
+                            img.thumbnail((DISPLAY_WIDTH, DISPLAY_HEIGHT), Image.Resampling.LANCZOS)
+                            
+                            # Create a new image with the exact display size (white background)
+                            display_img = Image.new('RGB', (DISPLAY_WIDTH, DISPLAY_HEIGHT), color=(255, 255, 255))
+                            
+                            # Calculate position to center the image
+                            x_offset = (DISPLAY_WIDTH - img.width) // 2
+                            y_offset = (DISPLAY_HEIGHT - img.height) // 2
+                            
+                            # Paste the resized image onto the display-sized image
+                            display_img.paste(img, (x_offset, y_offset))
+                            
+                            # Convert to grayscale
+                            display_img = display_img.convert('L')
+                            
+                            # Convert to 1-bit (black/white) using threshold
+                            threshold = 128
+                            display_img = display_img.point(lambda x: 0 if x < threshold else 255, mode='1')
+                            
+                            # Apply inverted mode if enabled
+                            if INVERTED:
+                                display_img = display_img.point(lambda x: 0 if x == 255 else 255, mode='1')
+                            
+                            # Apply flip if enabled
+                            if FLIP_DISPLAY:
+                                display_img = display_img.rotate(180, expand=False)
+                            
+                            # Convert PIL image to display buffer
+                            image_buffer = epd.getbuffer(display_img)
+                            
+                            # Display the image
+                            epd.display(image_buffer)
+                            
+                            print("Image displayed successfully")
+                        except Exception as e:
+                            print(f"Error displaying image: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            # Continue even if image display fails
+                    
+                    # Put display to sleep
+                    epd.sleep()
+                    print("Display cleared and put to sleep")
+                
+                # Clean up uploaded file after displaying
+                if image_file and os.path.exists(image_file):
+                    try:
+                        os.remove(image_file)
+                    except:
+                        pass
+                
+                return jsonify({
+                    "success": True,
+                    "message": "ovbuddy service stopped and display cleared" + (" (image displayed)" if image_file else "")
+                })
+            except Exception as e:
+                # Clean up uploaded file on error
+                if image_file and os.path.exists(image_file):
+                    try:
+                        os.remove(image_file)
+                    except:
+                        pass
+                return jsonify({
+                    "success": False,
+                    "error": f"Failed to clear/update display: {str(e)}"
+                }), 500
+                
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route('/api/update', methods=['POST'])
     def trigger_update():
