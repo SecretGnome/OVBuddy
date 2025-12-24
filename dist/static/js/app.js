@@ -111,6 +111,8 @@ function saveConfiguration(event) {
     .then(data => {
         if (data.success) {
             showMessage('Configuration saved successfully! [OK]', 'success');
+            // Show restart snackbar
+            showRestartSnackbar();
         } else {
             showMessage('Error: ' + (data.error || 'Failed to save configuration'), 'error');
         }
@@ -379,6 +381,10 @@ function controlService(serviceName, action) {
     .then(data => {
         if (data.success) {
             showMessage(data.message || `Service ${action}ed successfully [OK]`, 'success');
+            // Hide restart snackbar if restarting ovbuddy service
+            if (serviceName === 'ovbuddy' && action === 'restart') {
+                hideRestartSnackbar();
+            }
             // Refresh status after a short delay
             setTimeout(() => {
                 refreshServicesStatus();
@@ -393,6 +399,27 @@ function controlService(serviceName, action) {
         showMessage(`Error controlling service: ${error}`, 'error');
         statusDiv.innerHTML = originalHtml;
     });
+}
+
+// Restart Snackbar Functions
+function showRestartSnackbar() {
+    const snackbar = document.getElementById('restartSnackbar');
+    if (snackbar) {
+        snackbar.style.display = 'flex';
+    }
+}
+
+function hideRestartSnackbar() {
+    const snackbar = document.getElementById('restartSnackbar');
+    if (snackbar) {
+        snackbar.style.display = 'none';
+    }
+}
+
+function restartServiceFromSnackbar() {
+    console.log('Restarting ovbuddy service from snackbar...');
+    hideRestartSnackbar();
+    controlService('ovbuddy', 'restart');
 }
 
 // Theme Management
@@ -467,6 +494,8 @@ function loadVersionInfo() {
                 versionHtml += ` | <span style="color: var(--warning-color);">🔄 Update in progress...</span>`;
             } else if (needsRestart) {
                 versionHtml += ` | <span style="color: var(--warning-color);">⚠ Restart required</span>`;
+                // Show restart snackbar if restart is needed
+                showRestartSnackbar();
             } else if (updateAvailable) {
                 versionHtml += ` | <span style="color: var(--primary-color);">📦 Update available</span>`;
             }
@@ -510,6 +539,8 @@ function triggerUpdate() {
     
     updateButton.disabled = true;
     updateButton.textContent = 'Updating...';
+    // Hide restart snackbar since update will restart the service
+    hideRestartSnackbar();
     
     fetch('/api/update', {
         method: 'POST',
