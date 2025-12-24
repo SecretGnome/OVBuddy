@@ -45,7 +45,6 @@ function loadConfiguration() {
                 : (data.lines || '');
             
             document.getElementById('refresh_interval').value = data.refresh_interval || 60;
-            document.getElementById('config_display_duration').value = data.config_display_duration || 10;
             document.getElementById('qr_code_display_duration').value = data.qr_code_display_duration || 10;
             
             document.getElementById('destination_prefixes_to_remove').value = Array.isArray(data.destination_prefixes_to_remove) 
@@ -82,7 +81,6 @@ function saveConfiguration(event) {
             .map(s => s.trim())
             .filter(s => s),
         refresh_interval: parseInt(document.getElementById('refresh_interval').value),
-        config_display_duration: parseInt(document.getElementById('config_display_duration').value),
         qr_code_display_duration: parseInt(document.getElementById('qr_code_display_duration').value),
         destination_prefixes_to_remove: document.getElementById('destination_prefixes_to_remove').value
             .split('\n')
