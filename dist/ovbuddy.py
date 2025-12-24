@@ -56,7 +56,7 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.4"
+VERSION = "0.0.5"
 
 # --------------------------
 # CONFIGURATION
@@ -528,11 +528,11 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
                 f.write(config_backup)
             print("✓ Configuration restored")
         
-        render_update_screen(epd, "Update complete!", target_version, test_mode)
+        render_update_screen(epd, "Update complete! Please restart device.", target_version, test_mode)
         print("\n" + "="*50)
         print("UPDATE COMPLETED SUCCESSFULLY")
         print("="*50)
-        print("\nThe system will restart to apply changes...")
+        print("\nThe system needs to be restarted to apply changes...")
         
         # Mark update as successful
         set_update_status(in_progress=False, version=target_version, success=True)

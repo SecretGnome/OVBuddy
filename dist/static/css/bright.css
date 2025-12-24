@@ -286,6 +286,67 @@ button.warning:hover {
     color: #084298;
 }
 
+/* Snackbar */
+.snackbar {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #fff3cd;
+    border: 2px solid #ffc107;
+    border-radius: 5px;
+    padding: 15px 20px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 10000;
+    min-width: 300px;
+    max-width: 600px;
+    animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateX(-50%) translateY(100px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(-50%) translateY(0);
+        opacity: 1;
+    }
+}
+
+.snackbar span {
+    flex: 1;
+    color: #856404;
+    font-size: 14px;
+}
+
+.snackbar-button {
+    background-color: #ffc107;
+    color: #000;
+    border: 2px solid #ffc107;
+    padding: 8px 16px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: bold;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.snackbar-button:hover {
+    background-color: #ffca2c;
+    border-color: #ffca2c;
+    box-shadow: 0 2px 8px rgba(255, 193, 7, 0.4);
+}
+
+.snackbar-button:active {
+    transform: scale(0.95);
+}
+
 /* Status Indicators */
 .status-indicator {
     width: 12px;

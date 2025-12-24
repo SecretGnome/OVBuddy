@@ -17,6 +17,12 @@
         <!-- Message Display -->
         <div id="message" class="message"></div>
 
+        <!-- Restart Snackbar -->
+        <div id="restartSnackbar" class="snackbar" style="display: none;">
+            <span id="restartSnackbarText">Configuration changed. Please restart the ovbuddy service for changes to take effect.</span>
+            <button id="restartServiceButton" class="snackbar-button" onclick="restartServiceFromSnackbar()">Restart Service</button>
+        </div>
+
         <!-- Configuration Section -->
         <div class="terminal-window">
             <div class="terminal-window-header">
