@@ -189,25 +189,27 @@ fi
 echo ""
 echo -e "${YELLOW}Fixing Bonjour/mDNS setup...${NC}"
 # Remove .local entries from /etc/hosts that interfere with mDNS
-sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+# Use timeout to prevent hanging if sudo requires password
+timeout 10 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
     sudo -n sed -i '/\.local/d' /etc/hosts 2>/dev/null || true
     echo '✓ Removed .local entries from /etc/hosts'
 " 2>/dev/null || {
-    echo -e "${YELLOW}  ⚠ Could not remove .local entries (may require passwordless sudo)${NC}"
+    echo -e "${YELLOW}  ⚠ Could not remove .local entries (may require passwordless sudo or timed out)${NC}"
 }
 
 # Ensure avahi-daemon is enabled and running
-sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+# Use timeout to prevent hanging if sudo requires password
+timeout 10 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
     sudo -n systemctl enable avahi-daemon 2>/dev/null && \
     sudo -n systemctl start avahi-daemon 2>/dev/null && \
     echo '✓ avahi-daemon enabled and started'
 " 2>/dev/null || {
-    echo -e "${YELLOW}  ⚠ Could not enable/start avahi-daemon (may require passwordless sudo)${NC}"
+    echo -e "${YELLOW}  ⚠ Could not enable/start avahi-daemon (may require passwordless sudo or timed out)${NC}"
 }
 
 # Restart avahi-daemon to ensure mDNS is working (non-blocking)
 # Use try-restart which is non-blocking, run in background with short timeout
-(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+(timeout 10 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
     sudo -n systemctl try-restart avahi-daemon 2>/dev/null || true
     echo '✓ avahi-daemon restart attempted'
 " 2>/dev/null &)
@@ -220,46 +222,46 @@ if [ -f "dist/fix-bonjour.service" ]; then
     echo ""
     echo -e "${YELLOW}Installing persistent Bonjour fix (runs on boot)...${NC}"
     
-    # Install service and timer using non-blocking commands
+    # Install service and timer using non-blocking commands with timeouts
     INSTALLED=false
-    sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+    timeout 10 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
         cd ${REMOTE_DIR} && \
         sudo -n cp fix-bonjour.service /etc/systemd/system/ 2>/dev/null && \
         echo '✓ Copied service file'
     " 2>/dev/null && INSTALLED=true || {
-        echo -e "${YELLOW}  ⚠ Could not copy service file (may require passwordless sudo)${NC}"
+        echo -e "${YELLOW}  ⚠ Could not copy service file (may require passwordless sudo or timed out)${NC}"
     }
     
     # Copy timer if it exists
     if [ "$INSTALLED" = true ] && [ -f "dist/fix-bonjour.timer" ]; then
-        sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+        timeout 10 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
             cd ${REMOTE_DIR} && \
             sudo -n cp fix-bonjour.timer /etc/systemd/system/ 2>/dev/null && \
             echo '✓ Copied timer file'
         " 2>/dev/null || {
-            echo -e "${YELLOW}  ⚠ Could not copy timer file${NC}"
+            echo -e "${YELLOW}  ⚠ Could not copy timer file (timed out)${NC}"
         }
     fi
     
-    # Reload systemd and enable services (non-blocking)
+    # Reload systemd and enable services (non-blocking with timeout)
     if [ "$INSTALLED" = true ]; then
-        sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+        timeout 15 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
             sudo -n systemctl daemon-reload 2>/dev/null && \
             sudo -n systemctl enable fix-bonjour.service 2>/dev/null && \
             sudo -n systemctl start fix-bonjour.service 2>/dev/null && \
             echo '✓ Service installed and started'
         " 2>/dev/null || {
-            echo -e "${YELLOW}  ⚠ Could not enable/start service (may require passwordless sudo)${NC}"
+            echo -e "${YELLOW}  ⚠ Could not enable/start service (may require passwordless sudo or timed out)${NC}"
         }
         
         # Enable and start timer if it exists
         if [ -f "dist/fix-bonjour.timer" ]; then
-            sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+            timeout 15 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
                 sudo -n systemctl enable fix-bonjour.timer 2>/dev/null && \
                 sudo -n systemctl start fix-bonjour.timer 2>/dev/null && \
                 echo '✓ Timer installed and started'
             " 2>/dev/null || {
-                echo -e "${YELLOW}  ⚠ Could not enable/start timer${NC}"
+                echo -e "${YELLOW}  ⚠ Could not enable/start timer (timed out)${NC}"
             }
         fi
         
@@ -287,19 +289,19 @@ if [ -f "dist/install-service.sh" ]; then
     INSTALLED=false
     
     # Check if passwordless sudo is available (test with a simple command)
-    if sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n echo 'test' > /dev/null 2>&1" 2>/dev/null; then
+    if timeout 5 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n echo 'test' > /dev/null 2>&1" 2>/dev/null; then
         # Passwordless sudo is available, proceed with installation
         echo "  Checking for running services..."
-        sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n systemctl stop ovbuddy ovbuddy-web 2>/dev/null || true" 2>/dev/null
+        timeout 10 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n systemctl stop ovbuddy ovbuddy-web 2>/dev/null || true" 2>/dev/null
         
         echo "  Waiting for services to stop..."
         sleep 3
         
         echo "  Installing services..."
-        if sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && sudo -n bash install-service.sh" 2>&1; then
+        if timeout 30 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && sudo -n bash install-service.sh" 2>&1; then
             INSTALLED=true
         else
-            echo -e "${YELLOW}  ⚠ Service installation failed${NC}"
+            echo -e "${YELLOW}  ⚠ Service installation failed or timed out${NC}"
         fi
     else
         echo -e "${YELLOW}  ⚠ Passwordless sudo not available, skipping automatic service installation${NC}"
