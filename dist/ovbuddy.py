@@ -70,7 +70,6 @@ DEFAULT_CONFIG = {
     "stations": ["Zürich Saalsporthalle", "Zürich, Saalsporthalle"],
     "lines": ["S4", "T13", "T5"],
     "refresh_interval": 20,
-    "config_display_duration": 6,
     "qr_code_display_duration": 10,
     "destination_prefixes_to_remove": ["Zurich ", "Zurich, ", "Zuerich ", "Zuerich, ", "Zürich ", "Zürich, "],
     "destination_exceptions": ["HB", "Hbf"],
@@ -85,7 +84,6 @@ DEFAULT_CONFIG = {
 STATIONS = DEFAULT_CONFIG["stations"]
 LINES = DEFAULT_CONFIG["lines"]
 REFRESH_INTERVAL = DEFAULT_CONFIG["refresh_interval"]
-CONFIG_DISPLAY_DURATION = DEFAULT_CONFIG["config_display_duration"]
 QR_CODE_DISPLAY_DURATION = DEFAULT_CONFIG["qr_code_display_duration"]
 DESTINATION_PREFIXES_TO_REMOVE = DEFAULT_CONFIG["destination_prefixes_to_remove"]
 DESTINATION_EXCEPTIONS = DEFAULT_CONFIG["destination_exceptions"]
@@ -104,7 +102,7 @@ DISPLAY_HEIGHT = 122
 # --------------------------
 def load_config():
     """Load configuration from config.json file"""
-    global STATIONS, LINES, REFRESH_INTERVAL, CONFIG_DISPLAY_DURATION, QR_CODE_DISPLAY_DURATION
+    global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
     global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL
     global CONFIG_LAST_MODIFIED
@@ -132,7 +130,6 @@ def load_config():
             STATIONS = config.get("stations", DEFAULT_CONFIG["stations"])
             LINES = config.get("lines", DEFAULT_CONFIG["lines"])
             REFRESH_INTERVAL = max(1, int(config.get("refresh_interval", DEFAULT_CONFIG["refresh_interval"])))
-            CONFIG_DISPLAY_DURATION = max(0, int(config.get("config_display_duration", DEFAULT_CONFIG["config_display_duration"])))
             QR_CODE_DISPLAY_DURATION = max(0, int(config.get("qr_code_display_duration", DEFAULT_CONFIG["qr_code_display_duration"])))
             DESTINATION_PREFIXES_TO_REMOVE = config.get("destination_prefixes_to_remove", DEFAULT_CONFIG["destination_prefixes_to_remove"])
             DESTINATION_EXCEPTIONS = config.get("destination_exceptions", DEFAULT_CONFIG["destination_exceptions"])
@@ -157,7 +154,6 @@ def save_config():
             "stations": STATIONS,
             "lines": LINES,
             "refresh_interval": REFRESH_INTERVAL,
-            "config_display_duration": CONFIG_DISPLAY_DURATION,
             "qr_code_display_duration": QR_CODE_DISPLAY_DURATION,
             "destination_prefixes_to_remove": DESTINATION_PREFIXES_TO_REMOVE,
             "destination_exceptions": DESTINATION_EXCEPTIONS,
@@ -189,7 +185,6 @@ def get_config_dict():
             "stations": STATIONS,
             "lines": LINES,
             "refresh_interval": REFRESH_INTERVAL,
-            "config_display_duration": CONFIG_DISPLAY_DURATION,
             "qr_code_display_duration": QR_CODE_DISPLAY_DURATION,
             "destination_prefixes_to_remove": DESTINATION_PREFIXES_TO_REMOVE,
             "destination_exceptions": DESTINATION_EXCEPTIONS,
@@ -202,7 +197,7 @@ def get_config_dict():
 
 def update_config(new_config):
     """Update configuration from a dictionary (thread-safe)"""
-    global STATIONS, LINES, REFRESH_INTERVAL, CONFIG_DISPLAY_DURATION, QR_CODE_DISPLAY_DURATION
+    global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
     global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL
     
@@ -213,8 +208,6 @@ def update_config(new_config):
             LINES = new_config["lines"] if isinstance(new_config["lines"], list) else [new_config["lines"]]
         if "refresh_interval" in new_config:
             REFRESH_INTERVAL = max(1, int(new_config["refresh_interval"]))
-        if "config_display_duration" in new_config:
-            CONFIG_DISPLAY_DURATION = max(0, int(new_config["config_display_duration"]))
         if "qr_code_display_duration" in new_config:
             QR_CODE_DISPLAY_DURATION = max(0, int(new_config["qr_code_display_duration"]))
         if "destination_prefixes_to_remove" in new_config:
@@ -869,7 +862,21 @@ def render_qr_code(epd=None, test_mode=False):
         try:
             font = ImageFont.load_default()
             
-            # Instruction text lines - condensed to 2 lines
+            # Get WiFi status
+            wifi_status = get_wifi_status()
+            ssid = ""
+            ip = get_local_ip()
+            
+            if wifi_status.get("connected") and wifi_status.get("ssid"):
+                ssid = safe_ascii(wifi_status["ssid"])
+                # Truncate SSID if too long
+                if len(ssid) > 20:
+                    ssid = ssid[:17] + "..."
+                # Use IP from WiFi status if available, otherwise fallback to get_local_ip()
+                if wifi_status.get("ip"):
+                    ip = wifi_status["ip"]
+            
+            # Instruction text lines
             instructions = [
                 "Scan QR code to",
                 "access web config"
@@ -878,11 +885,11 @@ def render_qr_code(epd=None, test_mode=False):
             # Calculate starting Y position to center text vertically
             line_height = 12
             total_text_height = len(instructions) * line_height
-            # Add space for IP address
-            ip_spacing = 8  # Space between instructions and IP
-            ip_height = line_height
-            total_height_with_ip = total_text_height + ip_spacing + ip_height
-            start_y = (DISPLAY_HEIGHT - total_height_with_ip) // 2
+            # Add space for SSID and IP
+            info_spacing = 6  # Space between sections
+            info_height = line_height * 2  # SSID and IP (2 lines)
+            total_height_with_info = total_text_height + info_spacing + info_height
+            start_y = (DISPLAY_HEIGHT - total_height_with_info) // 2
             
             # Draw each line of instructions
             x = 5  # Left margin
@@ -890,23 +897,47 @@ def render_qr_code(epd=None, test_mode=False):
                 y = start_y + (i * line_height)
                 draw.text((x, y), line, font=font, fill=fg_color)
             
-            # Add IP address below instructions with spacing
-            ip_text = f"{get_local_ip()}"
-            ip_y = start_y + total_text_height + ip_spacing
+            # Add SSID and IP address below instructions
+            info_y = start_y + total_text_height + info_spacing
+            
+            # Draw SSID
+            if ssid:
+                ssid_text = f"WiFi: {ssid}"
+            else:
+                ssid_text = "WiFi: Not connected"
+            
+            # Truncate SSID text if too long
+            try:
+                bbox = draw.textbbox((0, 0), ssid_text, font=font)
+                text_width = bbox[2] - bbox[0]
+            except:
+                text_width = len(ssid_text) * 6
+            
+            if text_width > text_area_width - 10:
+                # Truncate SSID text
+                max_chars = (text_area_width - 10) // 6
+                if len(ssid_text) > max_chars:
+                    ssid_text = ssid_text[:max_chars-3] + "..."
+            
+            draw.text((x, info_y), ssid_text, font=font, fill=fg_color)
+            
+            # Draw IP address
+            ip_text = f"IP: {ip}"
+            ip_y = info_y + line_height
+            
             # Try to fit IP on one line
             try:
                 bbox = draw.textbbox((0, 0), ip_text, font=font)
                 text_width = bbox[2] - bbox[0]
             except:
-                # Fallback if textbbox not available
                 text_width = len(ip_text) * 6
             if text_width <= text_area_width - 10:
                 draw.text((x, ip_y), ip_text, font=font, fill=fg_color)
             else:
                 # Split IP if too long
-                parts = ip_text.split('.')
+                parts = ip.split('.')
                 if len(parts) == 4:
-                    draw.text((x, ip_y), '.'.join(parts[:2]), font=font, fill=fg_color)
+                    draw.text((x, ip_y), f"IP: {'.'.join(parts[:2])}", font=font, fill=fg_color)
                     draw.text((x, ip_y + line_height), '.'.join(parts[2:]), font=font, fill=fg_color)
             
             # Draw URL below the QR code (centered)
@@ -1965,21 +1996,82 @@ def main(test_mode_arg=False, disable_web=False):
             
             if perform_update(UPDATE_REPOSITORY_URL, latest_version):
                 print("\n✓ Update successful!")
-                print("Restarting service to apply changes...")
+                print("Reinstalling services and restarting...")
                 
-                # If running as systemd service, restart it
-                try:
-                    result = subprocess.run(['systemctl', 'is-active', 'ovbuddy'], 
-                                          capture_output=True, text=True, timeout=5)
-                    if result.stdout.strip() == 'active':
-                        print("Detected systemd service, triggering restart...")
-                        subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy'], 
-                                     timeout=5)
-                        # Exit to allow restart
-                        sys.exit(0)
-                except Exception as e:
-                    print(f"Could not restart service automatically: {e}")
-                    print("Please restart manually: sudo systemctl restart ovbuddy")
+                # Get current directory (where install-service.sh should be)
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                install_script = os.path.join(current_dir, "install-service.sh")
+                
+                # Try to reinstall services using install-service.sh (updates service files and restarts both services)
+                services_restarted = False
+                
+                if os.path.exists(install_script):
+                    print("Found install-service.sh, attempting to reinstall services...")
+                    try:
+                        # Check if we're running as a systemd service
+                        result = subprocess.run(['systemctl', 'is-active', 'ovbuddy'], 
+                                              capture_output=True, text=True, timeout=5)
+                        if result.stdout.strip() == 'active':
+                            print("Detected systemd service, running install-service.sh...")
+                            # Run install-service.sh with sudo (requires passwordless sudo)
+                            install_result = subprocess.run(
+                                ['sudo', '-n', 'bash', install_script],
+                                cwd=current_dir,
+                                capture_output=True,
+                                text=True,
+                                timeout=60
+                            )
+                            
+                            if install_result.returncode == 0:
+                                print("✓ Services reinstalled and restarted successfully")
+                                services_restarted = True
+                                # Exit to allow services to restart cleanly
+                                sys.exit(0)
+                            else:
+                                print(f"⚠ install-service.sh failed (exit code {install_result.returncode})")
+                                print(f"stdout: {install_result.stdout}")
+                                print(f"stderr: {install_result.stderr}")
+                                print("Falling back to manual service restart...")
+                    except subprocess.TimeoutExpired:
+                        print("⚠ install-service.sh timed out")
+                        print("Falling back to manual service restart...")
+                    except FileNotFoundError:
+                        print("⚠ sudo not available or passwordless sudo not configured")
+                        print("Falling back to manual service restart...")
+                    except Exception as e:
+                        print(f"⚠ Error running install-service.sh: {e}")
+                        print("Falling back to manual service restart...")
+                
+                # Fallback: manually restart both services if install-service.sh didn't work
+                if not services_restarted:
+                    try:
+                        result = subprocess.run(['systemctl', 'is-active', 'ovbuddy'], 
+                                              capture_output=True, text=True, timeout=5)
+                        if result.stdout.strip() == 'active':
+                            print("Restarting services manually...")
+                            
+                            # Restart both services
+                            subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy'], 
+                                         timeout=10, check=False)
+                            
+                            # Check if ovbuddy-web service exists and restart it too
+                            web_check = subprocess.run(['systemctl', 'is-active', 'ovbuddy-web'], 
+                                                      capture_output=True, text=True, timeout=5)
+                            if web_check.stdout.strip() == 'active':
+                                subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy-web'], 
+                                             timeout=10, check=False)
+                                print("✓ Both services restarted")
+                            else:
+                                print("✓ ovbuddy service restarted (ovbuddy-web not active)")
+                            
+                            # Exit to allow restart
+                            sys.exit(0)
+                    except Exception as e:
+                        print(f"⚠ Could not restart services automatically: {e}")
+                        print("Please restart manually:")
+                        print("  sudo systemctl restart ovbuddy")
+                        print("  sudo systemctl restart ovbuddy-web")
+                        print("  sudo bash install-service.sh  # To update service files")
             else:
                 print("\n✗ Update failed, continuing with current version")
         else:
@@ -2105,24 +2197,8 @@ def main(test_mode_arg=False, disable_web=False):
             # Determine if this is first successful fetch
             is_first_successful = first_successful_fetch == False and is_successful
             
-            # If this is the first refresh, always show configuration first
-            showing_config = False
+            # If this is the first refresh, show QR code first
             if is_first_refresh:
-                # Always show configuration on first refresh
-                error_msg = format_configuration()
-                showing_config = True
-            
-            render_board(departures, epd, error_msg, 
-                        is_first_successful=is_first_successful,
-                        last_was_successful=last_was_successful,
-                        test_mode=test_mode_arg)
-            
-            # If showing configuration, wait for the configured duration then show QR code
-            if showing_config:
-                print(f"Showing configuration for {CONFIG_DISPLAY_DURATION} seconds...")
-                time.sleep(CONFIG_DISPLAY_DURATION)
-                print("Configuration display complete")
-                
                 # Show QR code if duration is > 0
                 if QR_CODE_DISPLAY_DURATION > 0:
                     try:
@@ -2138,10 +2214,15 @@ def main(test_mode_arg=False, disable_web=False):
                     print("QR code display skipped (duration set to 0)")
                 
                 print("Fetching departures now...")
-                # Mark that we've done the config display
+                # Mark that we've done the QR code display
                 is_first_refresh = False
                 # Continue to next iteration to fetch immediately
                 continue
+            
+            render_board(departures, epd, error_msg, 
+                        is_first_successful=is_first_successful,
+                        last_was_successful=last_was_successful,
+                        test_mode=test_mode_arg)
             
             # Mark that we've done at least one refresh
             if is_first_refresh:
