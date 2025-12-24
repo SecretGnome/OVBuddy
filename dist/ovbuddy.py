@@ -56,7 +56,7 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.3"
+VERSION = "0.0.4"
 
 # --------------------------
 # CONFIGURATION
@@ -77,7 +77,8 @@ DEFAULT_CONFIG = {
     "max_departures": 6,
     "flip_display": False,
     "use_partial_refresh": False,
-    "update_repository_url": "https://github.com/tenineight/OVBuddy"
+    "update_repository_url": "https://github.com/tenineight/OVBuddy",
+    "auto_update": True
 }
 
 # Configuration variables (will be loaded from config.json)
@@ -92,6 +93,7 @@ MAX_DEPARTURES = DEFAULT_CONFIG["max_departures"]
 FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]
 USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
 UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
+AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
 
 # Display constants (not configurable via web)
 DISPLAY_WIDTH = 250
@@ -104,7 +106,7 @@ def load_config():
     """Load configuration from config.json file"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL
+    global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global CONFIG_LAST_MODIFIED
     
     with CONFIG_LOCK:
@@ -138,6 +140,7 @@ def load_config():
             FLIP_DISPLAY = bool(config.get("flip_display", DEFAULT_CONFIG["flip_display"]))
             USE_PARTIAL_REFRESH = bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]))
             UPDATE_REPOSITORY_URL = config.get("update_repository_url", DEFAULT_CONFIG["update_repository_url"])
+            AUTO_UPDATE = bool(config.get("auto_update", DEFAULT_CONFIG["auto_update"]))
             
             print(f"Configuration loaded from {CONFIG_FILE}")
         except json.JSONDecodeError as e:
@@ -161,7 +164,8 @@ def save_config():
             "max_departures": MAX_DEPARTURES,
             "flip_display": FLIP_DISPLAY,
             "use_partial_refresh": USE_PARTIAL_REFRESH,
-            "update_repository_url": UPDATE_REPOSITORY_URL
+            "update_repository_url": UPDATE_REPOSITORY_URL,
+            "auto_update": AUTO_UPDATE
         }
         
         try:
@@ -192,14 +196,15 @@ def get_config_dict():
             "max_departures": MAX_DEPARTURES,
             "flip_display": FLIP_DISPLAY,
             "use_partial_refresh": USE_PARTIAL_REFRESH,
-            "update_repository_url": UPDATE_REPOSITORY_URL
+            "update_repository_url": UPDATE_REPOSITORY_URL,
+            "auto_update": AUTO_UPDATE
         }
 
 def update_config(new_config):
     """Update configuration from a dictionary (thread-safe)"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL
+    global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     
     with CONFIG_LOCK:
         if "stations" in new_config:
@@ -224,6 +229,8 @@ def update_config(new_config):
             USE_PARTIAL_REFRESH = bool(new_config["use_partial_refresh"])
         if "update_repository_url" in new_config:
             UPDATE_REPOSITORY_URL = str(new_config["update_repository_url"])
+        if "auto_update" in new_config:
+            AUTO_UPDATE = bool(new_config["auto_update"])
     
     return save_config()
 
@@ -404,12 +411,14 @@ def set_update_status(in_progress=False, version=None, success=None):
     except Exception as e:
         print(f"Warning: Could not write update status: {e}")
 
-def perform_update(repo_url, target_version=None):
+def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
     """Perform system update by cloning repository and updating files
     
     Args:
         repo_url: GitHub repository URL
         target_version: Specific version to update to (tag name), or None for latest
+        epd: EPD display object to show update progress (optional)
+        test_mode: If True, don't try to use display
     
     Returns: True if update successful, False otherwise
     """
@@ -418,6 +427,9 @@ def perform_update(repo_url, target_version=None):
     
     # Mark update as in progress
     set_update_status(in_progress=True, version=target_version, success=None)
+    
+    # Show initial update screen
+    render_update_screen(epd, "Starting update...", target_version, test_mode)
     
     try:
         print("\n" + "="*50)
@@ -429,16 +441,19 @@ def perform_update(repo_url, target_version=None):
         config_path = os.path.join(current_dir, CONFIG_FILE)
         
         # Check if git is available
+        render_update_screen(epd, "Checking git...", target_version, test_mode)
         try:
             subprocess.run(['git', '--version'], capture_output=True, check=True, timeout=5)
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             print("ERROR: git is not installed or not available")
             print("Please install git: sudo apt-get install git")
+            render_update_screen(epd, "Error: git not found", target_version, test_mode)
             return False
         
         # Backup current config.json
         config_backup = None
         if os.path.exists(config_path):
+            render_update_screen(epd, "Backing up config...", target_version, test_mode)
             print(f"Backing up {CONFIG_FILE}...")
             with open(config_path, 'r', encoding='utf-8') as f:
                 config_backup = f.read()
@@ -446,6 +461,7 @@ def perform_update(repo_url, target_version=None):
         
         # Create temporary directory for cloning
         with tempfile.TemporaryDirectory() as temp_dir:
+            render_update_screen(epd, "Cloning repository...", target_version, test_mode)
             print(f"Cloning repository to temporary directory...")
             clone_path = os.path.join(temp_dir, "ovbuddy_update")
             
@@ -462,6 +478,7 @@ def perform_update(repo_url, target_version=None):
                 print(f"ERROR: Failed to clone repository")
                 print(f"stdout: {result.stdout}")
                 print(f"stderr: {result.stderr}")
+                render_update_screen(epd, "Error: Clone failed", target_version, test_mode)
                 return False
             
             print("✓ Repository cloned successfully")
@@ -470,8 +487,10 @@ def perform_update(repo_url, target_version=None):
             dist_path = os.path.join(clone_path, "dist")
             if not os.path.exists(dist_path):
                 print(f"ERROR: dist/ directory not found in repository")
+                render_update_screen(epd, "Error: No dist/ found", target_version, test_mode)
                 return False
             
+            render_update_screen(epd, "Updating files...", target_version, test_mode)
             print("Updating files from repository...")
             
             # Copy files from dist/ to current directory
@@ -503,11 +522,13 @@ def perform_update(repo_url, target_version=None):
         
         # Restore config.json from backup
         if config_backup:
+            render_update_screen(epd, "Restoring config...", target_version, test_mode)
             print(f"Restoring {CONFIG_FILE}...")
             with open(config_path, 'w', encoding='utf-8') as f:
                 f.write(config_backup)
             print("✓ Configuration restored")
         
+        render_update_screen(epd, "Update complete!", target_version, test_mode)
         print("\n" + "="*50)
         print("UPDATE COMPLETED SUCCESSFULLY")
         print("="*50)
@@ -954,9 +975,9 @@ def render_qr_code(epd=None, test_mode=False):
             # Calculate starting Y position to center text vertically
             line_height = 12
             total_text_height = len(instructions) * line_height
-            # Add space for SSID and IP
+            # Add space for SSID and IP (empty line before SSID, SSID, empty line, IP = 4 lines)
             info_spacing = 6  # Space between sections
-            info_height = line_height * 3  # SSID, empty line, and IP (3 lines)
+            info_height = line_height * 4  # Empty line, SSID, empty line, and IP (4 lines)
             total_height_with_info = total_text_height + info_spacing + info_height
             start_y = (DISPLAY_HEIGHT - total_height_with_info) // 2
             
@@ -966,8 +987,8 @@ def render_qr_code(epd=None, test_mode=False):
                 y = start_y + (i * line_height)
                 draw.text((x, y), line, font=font, fill=fg_color)
             
-            # Add SSID and IP address below instructions
-            info_y = start_y + total_text_height + info_spacing
+            # Add SSID and IP address below instructions (with empty line before SSID)
+            info_y = start_y + total_text_height + info_spacing + line_height  # Add line_height for empty line before SSID
             
             # Draw SSID
             if ssid:
@@ -998,7 +1019,7 @@ def render_qr_code(epd=None, test_mode=False):
             except:
                 wifi_label_width = len("WiFi: ") * 6
             
-            ip_y = info_y + line_height * 2  # Skip one line for spacing
+            ip_y = info_y + line_height * 2  # Skip one line after SSID for spacing
             
             # Draw IP label and value, aligning value with SSID value
             ip_label = "IP:"
@@ -1081,6 +1102,74 @@ def render_qr_code(epd=None, test_mode=False):
         
     except Exception as e:
         print(f"Error rendering QR code: {e}")
+
+def render_update_screen(epd=None, status="Updating...", version=None, test_mode=False):
+    """Render update progress screen on the e-ink display"""
+    if test_mode or epd is None:
+        if version:
+            print(f"\n[{status}] Updating to v{version}...")
+        else:
+            print(f"\n[{status}]")
+        return
+    
+    try:
+        bg_color = 0 if INVERTED else 255
+        fg_color = 255 if INVERTED else 0
+        
+        # Create display image
+        image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        draw = ImageDraw.Draw(image)
+        
+        # Load font
+        font = ImageFont.load_default()
+        line_height = 12
+        
+        # Title
+        title = "Updating..."
+        title_y = 10
+        draw.text((5, title_y), title, font=font, fill=fg_color)
+        
+        # Version info
+        version_y = title_y + line_height + 5
+        if version:
+            version_text = f"v{VERSION} -> v{version}"
+            draw.text((5, version_y), version_text, font=font, fill=fg_color)
+            status_y = version_y + line_height + 10
+        else:
+            status_y = title_y + line_height + 10
+        # Wrap status if too long
+        max_chars = (DISPLAY_WIDTH - 10) // 6
+        if len(status) > max_chars:
+            # Split into multiple lines
+            words = status.split()
+            lines = []
+            current_line = ""
+            for word in words:
+                if len(current_line + " " + word) <= max_chars:
+                    current_line += (" " if current_line else "") + word
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+            status_lines = lines[:3]  # Max 3 lines
+        else:
+            status_lines = [status]
+        
+        for i, line in enumerate(status_lines):
+            draw.text((5, status_y + i * line_height), line, font=font, fill=fg_color)
+        
+        # Rotate if needed
+        if FLIP_DISPLAY:
+            image = image.rotate(180, expand=False)
+        
+        # Display
+        image_buffer = epd.getbuffer(image)
+        epd.display(image_buffer)
+        
+    except Exception as e:
+        print(f"Error rendering update screen: {e}")
 
 def format_configuration():
     """Format current configuration as a displayable message"""
@@ -1990,6 +2079,48 @@ if FLASK_AVAILABLE:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/update', methods=['POST'])
+    def trigger_update():
+        """Trigger a system update"""
+        global update_triggered, update_target_version
+        
+        try:
+            data = request.get_json() or {}
+            target_version = data.get('version', None)
+            
+            # Check if update is already in progress
+            update_status = get_update_status()
+            if update_status.get("update_in_progress"):
+                return jsonify({
+                    "success": False,
+                    "error": "Update already in progress"
+                }), 400
+            
+            # Check if an update is available
+            update_available, latest_version = check_for_updates()
+            if not update_available:
+                # Check if user is forcing update to a specific version
+                if not target_version:
+                    return jsonify({
+                        "success": False,
+                        "error": "No update available"
+                    }), 400
+            
+            # Use provided version or latest available
+            version_to_update = target_version or latest_version
+            
+            # Set the trigger flag
+            update_triggered = True
+            update_target_version = version_to_update
+            
+            return jsonify({
+                "success": True,
+                "message": f"Update to v{version_to_update} triggered. The system will update and restart shortly.",
+                "target_version": version_to_update
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
 def start_web_server():
     """Start Flask web server in a separate thread.
 
@@ -2099,6 +2230,8 @@ def stop_web_server():
 # Global flag for immediate refresh trigger
 refresh_triggered = False
 config_reload_needed = False
+update_triggered = False
+update_target_version = None
 
 def signal_handler(signum, frame):
     """Handle USR1 signal to trigger immediate refresh"""
@@ -2107,10 +2240,59 @@ def signal_handler(signum, frame):
     print("Refresh signal received!")
 
 def main(test_mode_arg=False, disable_web=False):
-    global refresh_triggered, config_reload_needed
+    global refresh_triggered, config_reload_needed, update_triggered, update_target_version
     
     # Load configuration from file
     load_config()
+    
+    # Initialize display early (before update check) so we can show update screen
+    epd = None
+    if TEST_MODE:
+        print("Running in TEST MODE (no display hardware required)")
+        print("Set TEST_MODE=0 to run with display hardware\n")
+    else:
+        # Initialize display with retry logic to handle GPIO busy errors
+        print("Initializing display hardware...")
+        max_retries = 5
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                if epd is None:
+                    epd = epd2in13_V4.EPD()
+                epd.init()
+                # Clear screen: use black if inverted, white if normal
+                clear_color = 0x00 if INVERTED else 0xFF
+                epd.Clear(clear_color)
+                print("Display initialized and cleared")
+                break
+            except Exception as e:
+                error_msg = str(e)
+                if "GPIO busy" in error_msg or "busy" in error_msg.lower():
+                    if attempt < max_retries - 1:
+                        print(f"GPIO pins busy (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s before retry...")
+                        time.sleep(retry_delay)
+                        # Try to clean up any existing GPIO state
+                        try:
+                            if epd:
+                                epd.sleep()
+                        except:
+                            pass
+                        epd = None
+                        continue
+                    else:
+                        print(f"ERROR: Failed to initialize display after {max_retries} attempts: {e}")
+                        print("GPIO pins appear to be in use by another process.")
+                        print("Try: sudo systemctl stop ovbuddy && sleep 2 && sudo systemctl start ovbuddy")
+                        # Continue without display - update can still proceed
+                        epd = None
+                        break
+                else:
+                    # Different error, don't retry
+                    print(f"ERROR: Failed to initialize display: {e}")
+                    # Continue without display - update can still proceed
+                    epd = None
+                    break
     
     # Check and clear update status on startup
     update_status = get_update_status()
@@ -2132,11 +2314,12 @@ def main(test_mode_arg=False, disable_web=False):
     try:
         update_available, latest_version = check_for_updates()
         if update_available and latest_version:
-            print(f"\n🎉 Update available: v{VERSION} -> v{latest_version}")
-            print("Attempting to update...")
-            
-            if perform_update(UPDATE_REPOSITORY_URL, latest_version):
-                print("\n✓ Update successful!")
+            if AUTO_UPDATE:
+                print(f"\n🎉 Update available: v{VERSION} -> v{latest_version}")
+                print("Auto-update enabled. Attempting to update...")
+                
+                if perform_update(UPDATE_REPOSITORY_URL, latest_version, epd=epd, test_mode=test_mode_arg):
+                    print("\n✓ Update successful!")
                 print("Reinstalling services and restarting...")
                 
                 # Get current directory (where install-service.sh should be)
@@ -2166,6 +2349,9 @@ def main(test_mode_arg=False, disable_web=False):
                             if install_result.returncode == 0:
                                 print("✓ Services reinstalled and restarted successfully")
                                 services_restarted = True
+                                # Show rebooting message
+                                render_update_screen(epd, "Rebooting...", latest_version, test_mode_arg)
+                                time.sleep(2)  # Give user time to see the message
                                 # Exit to allow services to restart cleanly
                                 sys.exit(0)
                             else:
@@ -2205,6 +2391,9 @@ def main(test_mode_arg=False, disable_web=False):
                             else:
                                 print("✓ ovbuddy service restarted (ovbuddy-web not active)")
                             
+                            # Show rebooting message
+                            render_update_screen(epd, "Rebooting...", latest_version, test_mode_arg)
+                            time.sleep(2)  # Give user time to see the message
                             # Exit to allow restart
                             sys.exit(0)
                     except Exception as e:
@@ -2213,8 +2402,11 @@ def main(test_mode_arg=False, disable_web=False):
                         print("  sudo systemctl restart ovbuddy")
                         print("  sudo systemctl restart ovbuddy-web")
                         print("  sudo bash install-service.sh  # To update service files")
+                else:
+                    print("\n✗ Update failed, continuing with current version")
             else:
-                print("\n✗ Update failed, continuing with current version")
+                print(f"\n📦 Update available: v{VERSION} -> v{latest_version}")
+                print("Auto-update is disabled. Use the web interface to update manually.")
         else:
             print("✓ Running the latest version")
     except Exception as e:
@@ -2233,58 +2425,96 @@ def main(test_mode_arg=False, disable_web=False):
         print("Running with MOCK DATA (--test argument)")
         print("Using 'Zürich Saalsporthalle' as station with mock departures\n")
     
-    if TEST_MODE:
-        print("Running in TEST MODE (no display hardware required)")
-        print("Set TEST_MODE=0 to run with display hardware\n")
-        epd = None
-        first_successful_fetch = False
-    else:
-        # Initialize display with retry logic to handle GPIO busy errors
-        print("Initializing display hardware...")
-        epd = None
-        max_retries = 5
-        retry_delay = 2
-        
-        for attempt in range(max_retries):
-            try:
-                if epd is None:
-                    epd = epd2in13_V4.EPD()
-                epd.init()
-                # Clear screen: use black if inverted, white if normal
-                clear_color = 0x00 if INVERTED else 0xFF
-                epd.Clear(clear_color)
-                print("Display initialized and cleared")
-                first_successful_fetch = False  # Track if we've done first successful fetch
-                break
-            except Exception as e:
-                error_msg = str(e)
-                if "GPIO busy" in error_msg or "busy" in error_msg.lower():
-                    if attempt < max_retries - 1:
-                        print(f"GPIO pins busy (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s before retry...")
-                        time.sleep(retry_delay)
-                        # Try to clean up any existing GPIO state
-                        try:
-                            if epd:
-                                epd.sleep()
-                        except:
-                            pass
-                        epd = None
-                        continue
-                    else:
-                        print(f"ERROR: Failed to initialize display after {max_retries} attempts: {e}")
-                        print("GPIO pins appear to be in use by another process.")
-                        print("Try: sudo systemctl stop ovbuddy && sleep 2 && sudo systemctl start ovbuddy")
-                        raise
-                else:
-                    # Different error, don't retry
-                    print(f"ERROR: Failed to initialize display: {e}")
-                    raise
+    # Display is already initialized earlier (before update check)
+    # epd variable is already set above
+    first_successful_fetch = False  # Track if we've done first successful fetch
 
     update_count = 0
     last_was_successful = False  # Track if last fetch was successful (no error)
     is_first_refresh = True  # Track if this is the very first refresh attempt
     try:
         while True:
+            # Check for update trigger (from web interface)
+            if update_triggered:
+                target_version = update_target_version
+                update_triggered = False
+                update_target_version = None
+                
+                print("\n" + "="*50)
+                print(f"UPDATE TRIGGERED FROM WEB INTERFACE")
+                print(f"Target version: {target_version}")
+                print("="*50)
+                
+                if perform_update(UPDATE_REPOSITORY_URL, target_version, epd=epd, test_mode=test_mode_arg):
+                    print("\n✓ Update successful!")
+                    print("Reinstalling services and restarting...")
+                    
+                    # Get current directory (where install-service.sh should be)
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    install_script = os.path.join(current_dir, "install-service.sh")
+                    
+                    # Try to reinstall services using install-service.sh
+                    services_restarted = False
+                    
+                    if os.path.exists(install_script):
+                        print("Found install-service.sh, attempting to reinstall services...")
+                        try:
+                            # Check if we're running as a systemd service
+                            result = subprocess.run(['systemctl', 'is-active', 'ovbuddy'], 
+                                                  capture_output=True, text=True, timeout=5)
+                            if result.stdout.strip() == 'active':
+                                print("Detected systemd service, running install-service.sh...")
+                                install_result = subprocess.run(
+                                    ['sudo', '-n', 'bash', install_script],
+                                    cwd=current_dir,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=60
+                                )
+                                
+                                if install_result.returncode == 0:
+                                    print("✓ Services reinstalled and restarted successfully")
+                                    services_restarted = True
+                                    render_update_screen(epd, "Rebooting...", target_version, test_mode_arg)
+                                    time.sleep(2)
+                                    sys.exit(0)
+                                else:
+                                    print(f"⚠ install-service.sh failed (exit code {install_result.returncode})")
+                                    print("Falling back to manual service restart...")
+                        except Exception as e:
+                            print(f"⚠ Error running install-service.sh: {e}")
+                            print("Falling back to manual service restart...")
+                    
+                    # Fallback: manually restart both services
+                    if not services_restarted:
+                        try:
+                            result = subprocess.run(['systemctl', 'is-active', 'ovbuddy'], 
+                                                  capture_output=True, text=True, timeout=5)
+                            if result.stdout.strip() == 'active':
+                                print("Restarting services manually...")
+                                subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy'], 
+                                             timeout=10, check=False)
+                                web_check = subprocess.run(['systemctl', 'is-active', 'ovbuddy-web'], 
+                                                          capture_output=True, text=True, timeout=5)
+                                if web_check.stdout.strip() == 'active':
+                                    subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy-web'], 
+                                                 timeout=10, check=False)
+                                    print("✓ Both services restarted")
+                                else:
+                                    print("✓ ovbuddy service restarted (ovbuddy-web not active)")
+                                
+                                render_update_screen(epd, "Rebooting...", target_version, test_mode_arg)
+                                time.sleep(2)
+                                sys.exit(0)
+                        except Exception as e:
+                            print(f"⚠ Could not restart services automatically: {e}")
+                            print("Please restart manually:")
+                            print("  sudo systemctl restart ovbuddy")
+                            print("  sudo systemctl restart ovbuddy-web")
+                else:
+                    print("\n✗ Update failed, continuing with current version")
+                    # Error will be visible in web interface via version status endpoint
+            
             # Check for config reload
             if config_reload_needed:
                 load_config()
