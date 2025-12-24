@@ -56,7 +56,7 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 
 # --------------------------
 # CONFIGURATION
@@ -956,7 +956,7 @@ def render_qr_code(epd=None, test_mode=False):
             total_text_height = len(instructions) * line_height
             # Add space for SSID and IP
             info_spacing = 6  # Space between sections
-            info_height = line_height * 2  # SSID and IP (2 lines)
+            info_height = line_height * 3  # SSID, empty line, and IP (3 lines)
             total_height_with_info = total_text_height + info_spacing + info_height
             start_y = (DISPLAY_HEIGHT - total_height_with_info) // 2
             
@@ -990,24 +990,44 @@ def render_qr_code(epd=None, test_mode=False):
             
             draw.text((x, info_y), ssid_text, font=font, fill=fg_color)
             
-            # Draw IP address
-            ip_text = f"IP: {ip}"
-            ip_y = info_y + line_height
+            # Draw IP address (with empty line between SSID and IP)
+            # Measure "WiFi:" label width to align IP value with SSID value
+            try:
+                wifi_label_bbox = draw.textbbox((0, 0), "WiFi: ", font=font)
+                wifi_label_width = wifi_label_bbox[2] - wifi_label_bbox[0]
+            except:
+                wifi_label_width = len("WiFi: ") * 6
+            
+            ip_y = info_y + line_height * 2  # Skip one line for spacing
+            
+            # Draw IP label and value, aligning value with SSID value
+            ip_label = "IP:"
+            try:
+                ip_label_bbox = draw.textbbox((0, 0), ip_label, font=font)
+                ip_label_width = ip_label_bbox[2] - ip_label_bbox[0]
+            except:
+                ip_label_width = len(ip_label) * 6
+            
+            # Position IP label, then align IP value with SSID value
+            draw.text((x, ip_y), ip_label, font=font, fill=fg_color)
+            ip_value_x = x + wifi_label_width  # Align with SSID value position
             
             # Try to fit IP on one line
+            ip_text = ip
             try:
                 bbox = draw.textbbox((0, 0), ip_text, font=font)
                 text_width = bbox[2] - bbox[0]
             except:
                 text_width = len(ip_text) * 6
-            if text_width <= text_area_width - 10:
-                draw.text((x, ip_y), ip_text, font=font, fill=fg_color)
+            
+            if text_width <= text_area_width - 10 - (ip_value_x - x):
+                draw.text((ip_value_x, ip_y), ip_text, font=font, fill=fg_color)
             else:
                 # Split IP if too long
                 parts = ip.split('.')
                 if len(parts) == 4:
-                    draw.text((x, ip_y), f"IP: {'.'.join(parts[:2])}", font=font, fill=fg_color)
-                    draw.text((x, ip_y + line_height), '.'.join(parts[2:]), font=font, fill=fg_color)
+                    draw.text((ip_value_x, ip_y), '.'.join(parts[:2]), font=font, fill=fg_color)
+                    draw.text((ip_value_x, ip_y + line_height), '.'.join(parts[2:]), font=font, fill=fg_color)
             
             # Draw URL below the QR code (centered)
             url_y = qr_y + qr_height + 5  # 5px below QR code
