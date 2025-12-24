@@ -265,7 +265,11 @@ def compare_versions(current, latest):
         
         return 0
     except Exception as e:
-        print(f"Error comparing versions: {e}")
+        print(f"Error comparing versions '{current}' vs '{latest}': {e}")
+        import traceback
+        traceback.print_exc()
+        # Return 0 (equal) on error, which means no update available
+        # This is safer than returning 1 (update available) on error
         return 0
 
 def get_latest_version_from_github(repo_url):
@@ -306,8 +310,26 @@ def get_latest_version_from_github(repo_url):
             print("No tags found in repository")
             return None
         
-        # Get the first (latest) tag
-        latest_tag = tags[0]['name']
+        # Sort tags by version number (not alphabetically)
+        # GitHub API may return tags in different orders
+        def get_version_key(tag_name):
+            """Extract version for sorting"""
+            try:
+                # Remove 'v' prefix if present
+                version_str = tag_name.lstrip('v')
+                # Split and convert to tuple of integers for proper sorting
+                parts = [int(x) for x in version_str.split('.')]
+                # Pad with zeros to handle different lengths (e.g., 0.0.4 vs 0.0.5)
+                while len(parts) < 3:
+                    parts.append(0)
+                return tuple(parts)
+            except:
+                # If parsing fails, return a tuple that sorts last
+                return (0, 0, 0)
+        
+        # Sort tags by version (newest first)
+        sorted_tags = sorted(tags, key=lambda t: get_version_key(t['name']), reverse=True)
+        latest_tag = sorted_tags[0]['name']
         print(f"Latest version on GitHub: {latest_tag}")
         
         return latest_tag
@@ -335,12 +357,15 @@ def check_for_updates():
             print("Could not determine latest version")
             return (False, None)
         
+        print(f"Comparing versions: '{VERSION}' vs '{latest_version}'")
         comparison = compare_versions(VERSION, latest_version)
+        print(f"Comparison result: {comparison} (1=update available, 0=same, -1=current is newer)")
+        
         if comparison > 0:
             print(f"Update available: {VERSION} -> {latest_version}")
             return (True, latest_version)
         elif comparison == 0:
-            print("Already running the latest version")
+            print(f"Already running the latest version ({VERSION})")
             return (False, latest_version)
         else:
             print(f"Running a newer version than GitHub ({VERSION} > {latest_version})")
@@ -348,6 +373,8 @@ def check_for_updates():
     
     except Exception as e:
         print(f"Error checking for updates: {e}")
+        import traceback
+        traceback.print_exc()
         return (False, None)
 
 def get_file_version(file_path):
