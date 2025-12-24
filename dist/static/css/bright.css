@@ -1,0 +1,504 @@
+/* OVBuddy Bright Theme - Friendly & Modern */
+
+:root {
+    --bg-primary: #f8f9fa;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e9ecef;
+    --text-primary: #212529;
+    --text-secondary: #495057;
+    --text-muted: #6c757d;
+    --border-color: #dee2e6;
+    --accent-color: #0d6efd;
+    --warning-color: #ffc107;
+    --error-color: #dc3545;
+    --success-color: #198754;
+    --glow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    --glow-strong: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    margin: 0;
+    padding: 0;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header */
+.terminal-header {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    background-color: var(--bg-secondary);
+    box-shadow: var(--glow);
+}
+
+.terminal-title {
+    color: var(--text-primary);
+    font-size: 28px;
+    margin: 0;
+    font-weight: 600;
+}
+
+.terminal-title::before {
+    content: '';
+}
+
+.terminal-subtitle {
+    color: var(--text-muted);
+    font-size: 14px;
+    margin: 5px 0 0 0;
+}
+
+/* Terminal Window */
+.terminal-window {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 20px;
+    background-color: var(--bg-secondary);
+    box-shadow: var(--glow);
+    overflow: hidden;
+}
+
+.terminal-window-header {
+    background-color: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.terminal-window-title {
+    color: var(--text-primary);
+    font-size: 18px;
+    margin: 0;
+    font-weight: 600;
+}
+
+.terminal-window-title::before {
+    content: '';
+}
+
+.terminal-window-controls {
+    display: flex;
+    gap: 8px;
+}
+
+.terminal-control {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.terminal-control.close { background-color: #ff5f56; }
+.terminal-control.minimize { background-color: #ffbd2e; }
+.terminal-control.maximize { background-color: #27c93f; }
+
+.terminal-window-body {
+    padding: 20px;
+}
+
+/* Form Elements */
+.form-group {
+    margin-bottom: 20px;
+}
+
+label {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+label::before {
+    content: '';
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+textarea,
+select {
+    width: 100%;
+    padding: 10px 12px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    transition: all 0.2s ease;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.1);
+}
+
+textarea {
+    min-height: 80px;
+    resize: vertical;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+
+input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin-right: 10px;
+    vertical-align: middle;
+    cursor: pointer;
+    accent-color: var(--accent-color);
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-weight: normal;
+}
+
+.checkbox-label::before {
+    content: '';
+}
+
+.help-text {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 5px;
+}
+
+.help-text::before {
+    content: '';
+}
+
+/* Buttons */
+button {
+    background-color: var(--accent-color);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: none;
+    transition: all 0.2s ease;
+    box-shadow: var(--glow);
+    margin-right: 10px;
+    margin-bottom: 10px;
+}
+
+button:hover {
+    background-color: #0b5ed7;
+    box-shadow: var(--glow-strong);
+    transform: translateY(-1px);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+button.secondary {
+    background-color: #6c757d;
+}
+
+button.secondary:hover {
+    background-color: #5c636a;
+}
+
+button.danger {
+    background-color: var(--error-color);
+}
+
+button.danger:hover {
+    background-color: #bb2d3b;
+}
+
+button.warning {
+    background-color: var(--warning-color);
+    color: #000;
+}
+
+button.warning:hover {
+    background-color: #ffca2c;
+}
+
+/* Messages */
+.message {
+    padding: 15px 20px;
+    margin: 15px 0;
+    border-radius: 6px;
+    border: 1px solid;
+    display: none;
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.message.success {
+    background-color: #d1e7dd;
+    border-color: #badbcc;
+    color: #0f5132;
+}
+
+.message.error {
+    background-color: #f8d7da;
+    border-color: #f5c2c7;
+    color: #842029;
+}
+
+.message.info {
+    background-color: #cfe2ff;
+    border-color: #b6d4fe;
+    color: #084298;
+}
+
+/* Status Indicators */
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 10px;
+}
+
+.status-indicator.running {
+    background-color: var(--success-color);
+}
+
+.status-indicator.stopped {
+    background-color: var(--error-color);
+}
+
+.status-indicator.unknown {
+    background-color: var(--text-muted);
+}
+
+/* WiFi Status */
+.wifi-status {
+    padding: 15px;
+    background-color: #d1e7dd;
+    border: 1px solid #badbcc;
+    border-radius: 6px;
+    margin-bottom: 15px;
+}
+
+.wifi-status.disconnected {
+    background-color: #f8d7da;
+    border-color: #f5c2c7;
+}
+
+.wifi-status strong {
+    color: var(--text-primary);
+}
+
+/* Network List */
+.network-list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px;
+    background-color: var(--bg-primary);
+    margin-top: 10px;
+}
+
+.network-list::-webkit-scrollbar {
+    width: 10px;
+}
+
+.network-list::-webkit-scrollbar-track {
+    background: var(--bg-primary);
+}
+
+.network-list::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 5px;
+}
+
+.network-item {
+    padding: 12px;
+    margin: 8px 0;
+    background-color: var(--bg-secondary);
+    border: 2px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.network-item:hover {
+    border-color: var(--accent-color);
+    box-shadow: var(--glow);
+}
+
+.network-item.selected {
+    border-color: var(--accent-color);
+    background-color: #cfe2ff;
+}
+
+.network-ssid {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 5px;
+}
+
+.network-info {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+/* Service Status */
+.service-status {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 15px;
+    padding: 15px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+
+.service-status:hover {
+    box-shadow: var(--glow);
+}
+
+.service-info {
+    flex: 1;
+}
+
+.service-name {
+    font-weight: 600;
+    font-size: 16px;
+    color: var(--text-primary);
+    margin-bottom: 5px;
+}
+
+.service-details {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.service-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.service-actions button {
+    padding: 8px 15px;
+    font-size: 13px;
+    margin: 0;
+}
+
+/* Loading State */
+.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* Theme Toggle Button */
+.theme-toggle {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 50px;
+    padding: 12px 20px;
+    box-shadow: var(--glow-strong);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.theme-toggle:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 20px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .container {
+        padding: 10px;
+    }
+    
+    .terminal-title {
+        font-size: 22px;
+    }
+    
+    .service-status {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .service-actions {
+        width: 100%;
+    }
+    
+    .service-actions button {
+        flex: 1;
+    }
+    
+    .theme-toggle {
+        bottom: 10px;
+        right: 10px;
+        padding: 10px 16px;
+        font-size: 13px;
+    }
+}
+
+/* Remove terminal effects */
+body::before,
+body::after {
+    display: none;
+}
+

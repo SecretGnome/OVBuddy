@@ -1,0 +1,5 @@
+flask>=2.0.0
+zeroconf>=0.39.0
+pyqrcode>=1.2.1
+pypng>=0.20220715.0
+

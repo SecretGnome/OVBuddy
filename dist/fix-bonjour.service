@@ -1,0 +1,17 @@
+[Unit]
+Description=Fix Bonjour/mDNS by removing .local entries from /etc/hosts and ensuring hostname is correct
+After=network-online.target
+Before=avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Clean /etc/hosts, ensure hostname is set correctly, and restart avahi-daemon if running
+ExecStart=/usr/local/bin/fix-bonjour-persistent.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
