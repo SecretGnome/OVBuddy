@@ -12,6 +12,12 @@
         <div class="terminal-header">
             <h1 class="terminal-title">OVBuddy Terminal Interface</h1>
             <p class="terminal-subtitle">System Configuration & Management Console</p>
+
+            <!-- Theme Toggle Button -->
+            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">
+                <span id="themeIcon">☀️</span>
+                <span id="themeText">Bright Theme</span>
+            </button>
         </div>
 
         <!-- Message Display -->
@@ -214,12 +220,6 @@
             </p>
         </div>
     </div>
-
-    <!-- Theme Toggle Button -->
-    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">
-        <span id="themeIcon">☀️</span>
-        <span id="themeText">Bright Theme</span>
-    </button>
 
     <script src="/static/js/app.js"></script>
 </body>

@@ -27,6 +27,14 @@ echo ""
 echo "3. avahi-daemon status:"
 systemctl is-active avahi-daemon && echo "  ✓ avahi-daemon is running" || echo "  ✗ avahi-daemon is not running"
 systemctl is-enabled avahi-daemon && echo "  ✓ avahi-daemon is enabled" || echo "  ✗ avahi-daemon is not enabled"
+# Check if masked
+if systemctl is-masked avahi-daemon 2>/dev/null; then
+    echo "  ⚠ WARNING: avahi-daemon is MASKED (will not start even if enabled)"
+    echo "    Fix with: sudo systemctl unmask avahi-daemon"
+fi
+echo ""
+echo "  Recent avahi-daemon logs:"
+journalctl -u avahi-daemon -n 5 --no-pager 2>/dev/null || echo "  (no logs available)"
 echo ""
 
 # Check fix-bonjour service status

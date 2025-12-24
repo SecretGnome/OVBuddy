@@ -196,6 +196,89 @@ Common issues:
    sudo killall -HUP mDNSResponder
    ```
 
+### Bonjour/mDNS not working after reboot
+
+If `ovbuddy.local` doesn't resolve after a reboot, the avahi-daemon service may not be starting on boot.
+
+**Quick Fix (just redeploy):**
+```bash
+cd scripts
+./deploy.sh
+```
+
+This will automatically apply all fixes.
+
+**Alternative (fix only, no full deployment):**
+```bash
+cd scripts
+./fix-avahi-boot.sh
+```
+
+This script will:
+- Ensure avahi-daemon is installed and enabled
+- Unmask avahi-daemon (in case it was masked)
+- Update the fix-bonjour service with better boot handling
+- Start avahi-daemon if it's not running
+
+**Manual Fix on Pi:**
+```bash
+ssh pi@[pi-ip-address]
+sudo systemctl unmask avahi-daemon
+sudo systemctl enable avahi-daemon
+sudo systemctl start avahi-daemon
+```
+
+**Verify the fix:**
+```bash
+# Check avahi-daemon status
+ssh pi@ovbuddy.local 'sudo systemctl status avahi-daemon'
+
+# Check fix-bonjour service
+ssh pi@ovbuddy.local 'sudo systemctl status fix-bonjour'
+
+# View logs
+ssh pi@ovbuddy.local 'sudo journalctl -u avahi-daemon -u fix-bonjour -n 50'
+```
+
+**Test after reboot:**
+```bash
+# Reboot the Pi
+ssh pi@ovbuddy.local 'sudo reboot'
+
+# Wait 60 seconds, then test
+ping ovbuddy.local
+ssh pi@ovbuddy.local
+```
+
+### Web interface shutdown/restart commands timeout
+
+If the "Shutdown & Clear Display" button or service control commands timeout after fixing the avahi-daemon boot issue, this is caused by systemctl blocking.
+
+**Quick Fix (just redeploy):**
+```bash
+cd scripts
+./deploy.sh
+```
+
+This will automatically update the fix-bonjour script with the `--no-block` fix.
+
+**Alternative (fix only, no full deployment):**
+```bash
+cd scripts
+./fix-shutdown-timeout.sh
+```
+
+**What causes this:**
+- The fix-bonjour service manages avahi-daemon during boot
+- Without `--no-block`, systemctl commands wait for services to fully start
+- This creates deadlocks when multiple systemctl commands run simultaneously
+- Web interface commands timeout (10 second limit)
+
+**After applying the fix:**
+- systemctl commands return immediately
+- No more timeouts or deadlocks
+- Web interface works reliably
+
 ### WiFi not working
 
 **See [WIFI_SETUP.md](WIFI_SETUP.md) for comprehensive WiFi troubleshooting.**

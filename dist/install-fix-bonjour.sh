@@ -27,6 +27,24 @@ if [ ! -f "$SERVICE_FILE" ]; then
     exit 1
 fi
 
+# First, ensure avahi-daemon is installed and enabled
+echo ""
+echo "Ensuring avahi-daemon is installed and enabled..."
+if ! command -v avahi-daemon >/dev/null 2>&1; then
+    echo "Installing avahi-daemon..."
+    apt-get update -qq
+    apt-get install -y avahi-daemon avahi-utils
+    echo "✓ Installed avahi-daemon"
+else
+    echo "✓ avahi-daemon is already installed"
+fi
+
+# Unmask and enable avahi-daemon
+systemctl unmask avahi-daemon 2>/dev/null || true
+echo "✓ Unmasked avahi-daemon"
+systemctl enable avahi-daemon 2>/dev/null || true
+echo "✓ Enabled avahi-daemon to start on boot"
+
 # Copy script to /usr/local/bin/
 if [ -f "$SCRIPT_FILE" ]; then
     cp "$SCRIPT_FILE" "$SCRIPT_PATH"
