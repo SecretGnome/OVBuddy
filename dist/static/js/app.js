@@ -425,6 +425,56 @@ function loadTheme() {
     setTheme(savedTheme);
 }
 
+// Version Management
+function loadVersionInfo() {
+    console.log('Loading version information...');
+    
+    const versionText = document.getElementById('versionText');
+    if (!versionText) return;
+    
+    fetch('/api/version')
+        .then(response => response.json())
+        .then(data => {
+            console.log('Version data loaded:', data);
+            
+            let versionHtml = '';
+            const runningVersion = data.running_version || 'unknown';
+            const fileVersion = data.file_version || 'unknown';
+            const latestVersion = data.latest_version || 'unknown';
+            const versionMismatch = data.version_mismatch || false;
+            const updateInProgress = data.update_status?.update_in_progress || false;
+            const needsRestart = data.needs_restart || false;
+            
+            // Main version display
+            versionHtml = `<strong>Version:</strong> v${runningVersion}`;
+            
+            // Show file version if different
+            if (versionMismatch && fileVersion !== 'unknown') {
+                versionHtml += ` <span style="color: var(--warning-color);">(file: v${fileVersion})</span>`;
+            }
+            
+            // Show latest version if available
+            if (latestVersion !== 'unknown' && latestVersion !== runningVersion) {
+                versionHtml += ` | <span style="color: var(--primary-color);">Latest: v${latestVersion}</span>`;
+            }
+            
+            // Show update status
+            if (updateInProgress) {
+                versionHtml += ` | <span style="color: var(--warning-color);">🔄 Update in progress...</span>`;
+            } else if (needsRestart) {
+                versionHtml += ` | <span style="color: var(--warning-color);">⚠ Restart required</span>`;
+            } else if (data.update_available) {
+                versionHtml += ` | <span style="color: var(--primary-color);">📦 Update available</span>`;
+            }
+            
+            versionText.innerHTML = versionHtml;
+        })
+        .catch(error => {
+            console.error('Error loading version:', error);
+            versionText.textContent = 'Version: Unable to load';
+        });
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     console.log('OVBuddy Terminal Interface initialized');
@@ -436,6 +486,10 @@ document.addEventListener('DOMContentLoaded', function() {
     loadConfiguration();
     refreshWifiStatus();
     refreshServicesStatus();
+    loadVersionInfo();
+    
+    // Refresh version info periodically (every 30 seconds)
+    setInterval(loadVersionInfo, 30000);
     
     // Setup form handler
     const configForm = document.getElementById('configForm');

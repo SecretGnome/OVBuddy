@@ -56,7 +56,7 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.1"
+VERSION = "0.0.2"
 
 # --------------------------
 # CONFIGURATION
@@ -343,6 +343,67 @@ def check_for_updates():
         print(f"Error checking for updates: {e}")
         return (False, None)
 
+def get_file_version(file_path):
+    """Extract version from a Python file by reading it
+    Returns: version string or None if not found
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                # Look for VERSION = "x.x.x" pattern
+                if 'VERSION' in line and '=' in line:
+                    # Extract version string
+                    match = re.search(r'["\']([0-9]+\.[0-9]+\.[0-9]+)["\']', line)
+                    if match:
+                        return match.group(1)
+    except Exception:
+        pass
+    return None
+
+def get_update_status():
+    """Get current update status from status file
+    Returns: dict with update status info
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    status_file = os.path.join(current_dir, ".update_status.json")
+    
+    if not os.path.exists(status_file):
+        return {
+            "update_in_progress": False,
+            "last_update_attempt": None,
+            "last_update_version": None,
+            "last_update_success": None
+        }
+    
+    try:
+        with open(status_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {
+            "update_in_progress": False,
+            "last_update_attempt": None,
+            "last_update_version": None,
+            "last_update_success": None
+        }
+
+def set_update_status(in_progress=False, version=None, success=None):
+    """Update the update status file"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    status_file = os.path.join(current_dir, ".update_status.json")
+    
+    status = {
+        "update_in_progress": in_progress,
+        "last_update_attempt": datetime.now().isoformat() if in_progress or version else None,
+        "last_update_version": version,
+        "last_update_success": success
+    }
+    
+    try:
+        with open(status_file, 'w', encoding='utf-8') as f:
+            json.dump(status, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Could not write update status: {e}")
+
 def perform_update(repo_url, target_version=None):
     """Perform system update by cloning repository and updating files
     
@@ -354,6 +415,9 @@ def perform_update(repo_url, target_version=None):
     """
     import tempfile
     import shutil
+    
+    # Mark update as in progress
+    set_update_status(in_progress=True, version=target_version, success=None)
     
     try:
         print("\n" + "="*50)
@@ -449,15 +513,20 @@ def perform_update(repo_url, target_version=None):
         print("="*50)
         print("\nThe system will restart to apply changes...")
         
+        # Mark update as successful
+        set_update_status(in_progress=False, version=target_version, success=True)
+        
         # Signal that restart is needed
         # We'll handle the actual restart in the main function
         return True
     
     except subprocess.TimeoutExpired:
         print("ERROR: Git operation timed out")
+        set_update_status(in_progress=False, version=target_version, success=False)
         return False
     except Exception as e:
         print(f"ERROR: Update failed: {e}")
+        set_update_status(in_progress=False, version=target_version, success=False)
         import traceback
         traceback.print_exc()
         return False
@@ -1862,6 +1931,45 @@ if FLASK_AVAILABLE:
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @app.route('/api/version', methods=['GET'])
+    def version_status():
+        """Get version information and update status"""
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            script_path = os.path.join(current_dir, "ovbuddy.py")
+            
+            # Get running version (from memory)
+            running_version = VERSION
+            
+            # Get file version (from disk)
+            file_version = get_file_version(script_path)
+            
+            # Get update status
+            update_status = get_update_status()
+            
+            # Check if file was updated but service hasn't restarted
+            version_mismatch = file_version and file_version != running_version
+            
+            # Check for latest version on GitHub
+            latest_version = None
+            update_available = False
+            try:
+                update_available, latest_version = check_for_updates()
+            except Exception:
+                pass  # Don't fail the endpoint if version check fails
+            
+            return jsonify({
+                "running_version": running_version,
+                "file_version": file_version,
+                "latest_version": latest_version,
+                "version_mismatch": version_mismatch,
+                "update_available": update_available,
+                "update_status": update_status,
+                "needs_restart": version_mismatch or update_status.get("update_in_progress", False)
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
 def start_web_server():
     """Start Flask web server in a separate thread.
 
@@ -1983,6 +2091,19 @@ def main(test_mode_arg=False, disable_web=False):
     
     # Load configuration from file
     load_config()
+    
+    # Check and clear update status on startup
+    update_status = get_update_status()
+    if update_status.get("update_in_progress"):
+        # If update was marked as in progress but we're starting, it may have been interrupted
+        # Clear it and mark as potentially failed
+        print("⚠ Previous update may have been interrupted")
+        set_update_status(in_progress=False, success=False)
+    elif update_status.get("last_update_success") and update_status.get("last_update_version"):
+        # If last update was successful, we're likely running the new version now
+        # Clear the status (update completed)
+        print(f"✓ Last update to v{update_status.get('last_update_version')} was successful")
+        # Don't clear it completely, just mark as not in progress
     
     # Check for updates on startup
     print("\n" + "="*50)
