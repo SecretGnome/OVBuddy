@@ -57,7 +57,7 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.6"
+VERSION = "0.0.7"
 
 # --------------------------
 # CONFIGURATION
@@ -1137,6 +1137,52 @@ def render_qr_code(epd=None, test_mode=False):
     except Exception as e:
         print(f"Error rendering QR code: {e}")
 
+def render_loading_screen(epd=None, test_mode=False):
+    """Render loading screen on the e-ink display during startup"""
+    if test_mode or epd is None:
+        print("\n[Loading] OVBuddy Starting...")
+        return
+    
+    try:
+        bg_color = 0 if INVERTED else 255
+        fg_color = 255 if INVERTED else 0
+        
+        # Create display image
+        image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        draw = ImageDraw.Draw(image)
+        
+        # Load font
+        font = ImageFont.load_default()
+        line_height = 12
+        
+        # Center the text vertically
+        text_lines = [
+            "Starting..."
+            " ",
+        ]
+        total_text_height = len(text_lines) * line_height
+        start_y = (DISPLAY_HEIGHT - total_text_height) // 2
+        
+        # Draw each line centered horizontally
+        for i, line in enumerate(text_lines):
+            # Get text width for centering
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_width = bbox[2] - bbox[0]
+            x = (DISPLAY_WIDTH - text_width) // 2
+            y = start_y + (i * line_height)
+            draw.text((x, y), line, font=font, fill=fg_color)
+        
+        # Rotate if needed
+        if FLIP_DISPLAY:
+            image = image.rotate(180, expand=False)
+        
+        # Display
+        image_buffer = epd.getbuffer(image)
+        epd.display(image_buffer)
+        
+    except Exception as e:
+        print(f"Error rendering loading screen: {e}")
+
 def render_update_screen(epd=None, status="Updating...", version=None, test_mode=False):
     """Render update progress screen on the e-ink display"""
     if test_mode or epd is None:
@@ -1987,10 +2033,31 @@ zeroconf = None
 service_info = None
 
 if FLASK_AVAILABLE:
+    @app.route('/test')
+    def test():
+        """Simple test endpoint to verify Flask is working"""
+        return "<h1>Flask is working!</h1><p>If you see this, Flask is responding correctly.</p>"
+    
     @app.route('/')
     def index():
         """Serve the web configuration interface"""
-        return render_template('index.html')
+        try:
+            print("Rendering index.html template...")
+            template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'index.html')
+            print(f"Template path: {template_path}")
+            print(f"Template exists: {os.path.exists(template_path)}")
+            if not os.path.exists(template_path):
+                return f"Template not found at: {template_path}", 404
+            result = render_template('index.html')
+            print(f"Template rendered successfully, length: {len(result) if result else 0}")
+            if not result or len(result) == 0:
+                return "Template rendered but result is empty", 500
+            return result
+        except Exception as e:
+            print(f"Error rendering template: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Error loading template: {str(e)}", 500
 
     @app.route('/api/config', methods=['GET'])
     def get_config():
@@ -2158,6 +2225,16 @@ if FLASK_AVAILABLE:
                     if image_file:
                         print(f"TEST MODE: Would display image: {image_file}")
                 else:
+                    # Check if display libraries are available
+                    try:
+                        import epd2in13_V4
+                        from PIL import Image
+                    except ImportError as e:
+                        return jsonify({
+                            "success": False,
+                            "error": f"Display libraries not available: {e}"
+                        }), 500
+                    
                     # Initialize display
                     epd = epd2in13_V4.EPD()
                     epd.init()
@@ -2434,6 +2511,8 @@ def main(test_mode_arg=False, disable_web=False):
                 clear_color = 0x00 if INVERTED else 0xFF
                 epd.Clear(clear_color)
                 print("Display initialized and cleared")
+                # Show loading screen immediately
+                render_loading_screen(epd, test_mode=test_mode_arg)
                 break
             except Exception as e:
                 error_msg = str(e)
