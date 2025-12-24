@@ -175,6 +175,33 @@
             </div>
         </div>
 
+        <!-- Shutdown Section -->
+        <div class="terminal-window">
+            <div class="terminal-window-header">
+                <h2 class="terminal-window-title">shutdown</h2>
+                <div class="terminal-window-controls">
+                    <span class="terminal-control close"></span>
+                    <span class="terminal-control minimize"></span>
+                    <span class="terminal-control maximize"></span>
+                </div>
+            </div>
+            <div class="terminal-window-body">
+                <div id="shutdownSection">
+                    <p style="margin-bottom: 15px;">Stop the ovbuddy service and clear the display. Optionally upload an image to display after clearing.</p>
+                    
+                    <div class="form-group">
+                        <label for="shutdownImage">Optional: Upload image to display (JPG/PNG)</label>
+                        <input type="file" id="shutdownImage" name="shutdownImage" accept="image/jpeg,image/jpg,image/png">
+                        <div class="help-text">Image will be resized and centered on the display</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <button type="button" id="shutdownButton" onclick="shutdownDisplay()" class="danger">Shutdown & Clear Display</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Footer -->
         <div style="text-align: center; padding: 20px; color: var(--text-muted); font-size: 12px;">
             <p>OVBuddy Web Interface | System Online | Press Cmd + W to exit</p>

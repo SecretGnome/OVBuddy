@@ -584,6 +584,54 @@ function triggerUpdate() {
     });
 }
 
+// Shutdown Management
+function shutdownDisplay() {
+    const shutdownButton = document.getElementById('shutdownButton');
+    const imageInput = document.getElementById('shutdownImage');
+    
+    if (!confirm('Are you sure you want to shutdown? This will stop the ovbuddy service and clear the display.')) {
+        return;
+    }
+    
+    shutdownButton.disabled = true;
+    shutdownButton.textContent = 'Shutting down...';
+    
+    // Create form data for file upload
+    const formData = new FormData();
+    if (imageInput.files && imageInput.files[0]) {
+        formData.append('image', imageInput.files[0]);
+    }
+    
+    fetch('/api/shutdown', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showMessage(data.message || 'Shutdown successful! Display cleared. [OK]', 'success');
+            // Refresh service status after a delay
+            setTimeout(() => {
+                refreshServicesStatus();
+            }, 2000);
+            // Clear file input
+            if (imageInput) {
+                imageInput.value = '';
+            }
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to shutdown'), 'error');
+            shutdownButton.disabled = false;
+            shutdownButton.textContent = 'Shutdown & Clear Display';
+        }
+    })
+    .catch(error => {
+        console.error('Error shutting down:', error);
+        showMessage('Error shutting down', 'error');
+        shutdownButton.disabled = false;
+        shutdownButton.textContent = 'Shutdown & Clear Display';
+    });
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     console.log('OVBuddy Terminal Interface initialized');
