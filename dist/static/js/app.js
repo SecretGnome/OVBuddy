@@ -59,6 +59,7 @@ function loadConfiguration() {
             document.getElementById('inverted').checked = data.inverted || false;
             document.getElementById('flip_display').checked = data.flip_display || false;
             document.getElementById('use_partial_refresh').checked = data.use_partial_refresh || false;
+            document.getElementById('auto_update').checked = data.auto_update !== undefined ? data.auto_update : true;
         })
         .catch(error => {
             console.error('Error loading config:', error);
@@ -92,7 +93,8 @@ function saveConfiguration(event) {
         max_departures: parseInt(document.getElementById('max_departures').value),
         inverted: document.getElementById('inverted').checked,
         flip_display: document.getElementById('flip_display').checked,
-        use_partial_refresh: document.getElementById('use_partial_refresh').checked
+        use_partial_refresh: document.getElementById('use_partial_refresh').checked,
+        auto_update: document.getElementById('auto_update').checked
     };
     
     console.log('Sending config:', config);
@@ -430,7 +432,8 @@ function loadVersionInfo() {
     console.log('Loading version information...');
     
     const versionText = document.getElementById('versionText');
-    if (!versionText) return;
+    const versionInfo = document.getElementById('versionInfo');
+    if (!versionText || !versionInfo) return;
     
     fetch('/api/version')
         .then(response => response.json())
@@ -444,6 +447,7 @@ function loadVersionInfo() {
             const versionMismatch = data.version_mismatch || false;
             const updateInProgress = data.update_status?.update_in_progress || false;
             const needsRestart = data.needs_restart || false;
+            const updateAvailable = data.update_available || false;
             
             // Main version display
             versionHtml = `<strong>Version:</strong> v${runningVersion}`;
@@ -463,16 +467,90 @@ function loadVersionInfo() {
                 versionHtml += ` | <span style="color: var(--warning-color);">🔄 Update in progress...</span>`;
             } else if (needsRestart) {
                 versionHtml += ` | <span style="color: var(--warning-color);">⚠ Restart required</span>`;
-            } else if (data.update_available) {
+            } else if (updateAvailable) {
                 versionHtml += ` | <span style="color: var(--primary-color);">📦 Update available</span>`;
             }
             
             versionText.innerHTML = versionHtml;
+            
+            // Add or update Force Update button
+            let updateButton = document.getElementById('forceUpdateButton');
+            if (updateAvailable && !updateInProgress && !needsRestart) {
+                if (!updateButton) {
+                    updateButton = document.createElement('button');
+                    updateButton.id = 'forceUpdateButton';
+                    updateButton.className = 'secondary';
+                    updateButton.style.marginTop = '10px';
+                    updateButton.style.width = '100%';
+                    updateButton.textContent = 'Force Update';
+                    updateButton.onclick = triggerUpdate;
+                    versionInfo.appendChild(updateButton);
+                }
+                updateButton.disabled = false;
+                updateButton.textContent = `Force Update to v${latestVersion}`;
+            } else {
+                if (updateButton) {
+                    updateButton.remove();
+                }
+            }
         })
         .catch(error => {
             console.error('Error loading version:', error);
             versionText.textContent = 'Version: Unable to load';
         });
+}
+
+function triggerUpdate() {
+    const updateButton = document.getElementById('forceUpdateButton');
+    if (!updateButton) return;
+    
+    if (!confirm('Are you sure you want to update the system? The device will restart after the update completes.')) {
+        return;
+    }
+    
+    updateButton.disabled = true;
+    updateButton.textContent = 'Updating...';
+    
+    fetch('/api/update', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showMessage(data.message || 'Update triggered successfully! The system will update and restart shortly. [OK]', 'success');
+            // Refresh version info to show update in progress
+            setTimeout(() => {
+                loadVersionInfo();
+            }, 1000);
+            // Keep checking version status
+            const checkInterval = setInterval(() => {
+                loadVersionInfo();
+                fetch('/api/version')
+                    .then(response => response.json())
+                    .then(versionData => {
+                        const updateInProgress = versionData.update_status?.update_in_progress || false;
+                        if (!updateInProgress) {
+                            clearInterval(checkInterval);
+                            loadVersionInfo();
+                        }
+                    });
+            }, 2000);
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to trigger update'), 'error');
+            updateButton.disabled = false;
+            updateButton.textContent = 'Force Update';
+        }
+    })
+    .catch(error => {
+        console.error('Error triggering update:', error);
+        showMessage('Error triggering update', 'error');
+        updateButton.disabled = false;
+        updateButton.textContent = 'Force Update';
+    });
 }
 
 // Initialize on page load
