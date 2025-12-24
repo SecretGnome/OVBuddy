@@ -1,0 +1,607 @@
+/* OVBuddy Terminal Theme - Hacker Style */
+
+:root {
+    --bg-primary: #0a0e14;
+    --bg-secondary: #0d1117;
+    --bg-tertiary: #161b22;
+    --text-primary: #00ff00;
+    --text-secondary: #00cc00;
+    --text-muted: #008800;
+    --border-color: #00ff00;
+    --accent-color: #00ffff;
+    --warning-color: #ffff00;
+    --error-color: #ff0000;
+    --success-color: #00ff00;
+    --glow: 0 0 5px rgba(0, 255, 0, 0.5);
+    --glow-strong: 0 0 10px rgba(0, 255, 0, 0.8);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    margin: 0;
+    padding: 0;
+    line-height: 1.6;
+    background-image: 
+        repeating-linear-gradient(
+            0deg,
+            rgba(0, 255, 0, 0.03) 0px,
+            transparent 1px,
+            transparent 2px,
+            rgba(0, 255, 0, 0.03) 3px
+        );
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Terminal Header */
+.terminal-header {
+    border: 2px solid var(--border-color);
+    border-radius: 5px;
+    padding: 15px;
+    margin-bottom: 20px;
+    background-color: var(--bg-secondary);
+    box-shadow: var(--glow);
+    position: relative;
+}
+
+.terminal-header::before {
+    content: '●●●';
+    position: absolute;
+    top: 10px;
+    right: 15px;
+    color: var(--text-muted);
+    font-size: 12px;
+    letter-spacing: 5px;
+}
+
+.terminal-title {
+    color: var(--text-primary);
+    font-size: 24px;
+    margin: 0;
+    text-shadow: var(--glow);
+    animation: flicker 3s infinite;
+}
+
+.terminal-title::before {
+    content: '> ';
+    color: var(--accent-color);
+}
+
+.terminal-subtitle {
+    color: var(--text-muted);
+    font-size: 14px;
+    margin: 5px 0 0 0;
+}
+
+@keyframes flicker {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.95; }
+}
+
+/* Terminal Window */
+.terminal-window {
+    border: 2px solid var(--border-color);
+    border-radius: 5px;
+    margin-bottom: 20px;
+    background-color: var(--bg-secondary);
+    box-shadow: var(--glow);
+    overflow: hidden;
+}
+
+.terminal-window-header {
+    background-color: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    padding: 10px 15px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.terminal-window-title {
+    color: var(--text-primary);
+    font-size: 16px;
+    margin: 0;
+    text-shadow: var(--glow);
+}
+
+.terminal-window-title::before {
+    content: '$ ';
+    color: var(--accent-color);
+}
+
+.terminal-window-controls {
+    display: flex;
+    gap: 8px;
+}
+
+.terminal-control {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.terminal-control.close { background-color: var(--error-color); }
+.terminal-control.minimize { background-color: var(--warning-color); }
+.terminal-control.maximize { background-color: var(--success-color); }
+
+.terminal-window-body {
+    padding: 20px;
+}
+
+/* Form Elements */
+.form-group {
+    margin-bottom: 20px;
+}
+
+label {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+    font-weight: bold;
+    text-shadow: var(--glow);
+}
+
+label::before {
+    content: '> ';
+    color: var(--accent-color);
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+textarea,
+select {
+    width: 100%;
+    padding: 10px;
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    color: var(--text-primary);
+    font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+    font-size: 14px;
+    box-shadow: inset 0 0 5px rgba(0, 255, 0, 0.1);
+    transition: all 0.3s ease;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: var(--glow);
+}
+
+textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+
+input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin-right: 10px;
+    vertical-align: middle;
+    cursor: pointer;
+    accent-color: var(--text-primary);
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.checkbox-label::before {
+    content: '';
+}
+
+.help-text {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 5px;
+    font-style: italic;
+}
+
+.help-text::before {
+    content: '// ';
+    color: var(--text-muted);
+}
+
+/* Buttons */
+button {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 2px solid var(--border-color);
+    padding: 10px 20px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+    font-size: 14px;
+    font-weight: bold;
+    text-transform: uppercase;
+    transition: all 0.3s ease;
+    box-shadow: var(--glow);
+    margin-right: 10px;
+    margin-bottom: 10px;
+}
+
+button:hover {
+    background-color: var(--border-color);
+    color: var(--bg-primary);
+    box-shadow: var(--glow-strong);
+    transform: translateY(-2px);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+button.secondary {
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+button.secondary:hover {
+    background-color: var(--accent-color);
+    color: var(--bg-primary);
+}
+
+button.danger {
+    border-color: var(--error-color);
+    color: var(--error-color);
+}
+
+button.danger:hover {
+    background-color: var(--error-color);
+    color: var(--bg-primary);
+}
+
+button.warning {
+    border-color: var(--warning-color);
+    color: var(--warning-color);
+}
+
+button.warning:hover {
+    background-color: var(--warning-color);
+    color: var(--bg-primary);
+}
+
+/* Messages */
+.message {
+    padding: 15px;
+    margin: 15px 0;
+    border-radius: 3px;
+    border: 2px solid;
+    display: none;
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.message.success {
+    background-color: rgba(0, 255, 0, 0.1);
+    border-color: var(--success-color);
+    color: var(--success-color);
+}
+
+.message.error {
+    background-color: rgba(255, 0, 0, 0.1);
+    border-color: var(--error-color);
+    color: var(--error-color);
+}
+
+.message.info {
+    background-color: rgba(0, 255, 255, 0.1);
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+/* Status Indicators */
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 10px;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.status-indicator.running {
+    background-color: var(--success-color);
+    box-shadow: 0 0 5px var(--success-color);
+}
+
+.status-indicator.stopped {
+    background-color: var(--error-color);
+    box-shadow: 0 0 5px var(--error-color);
+}
+
+.status-indicator.unknown {
+    background-color: var(--text-muted);
+}
+
+/* WiFi Status */
+.wifi-status {
+    padding: 15px;
+    background-color: rgba(0, 255, 0, 0.05);
+    border: 1px solid var(--success-color);
+    border-radius: 3px;
+    margin-bottom: 15px;
+}
+
+.wifi-status.disconnected {
+    background-color: rgba(255, 0, 0, 0.05);
+    border-color: var(--error-color);
+}
+
+.wifi-status strong {
+    color: var(--accent-color);
+}
+
+/* Network List */
+.network-list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 10px;
+    background-color: var(--bg-primary);
+    margin-top: 10px;
+}
+
+.network-list::-webkit-scrollbar {
+    width: 10px;
+}
+
+.network-list::-webkit-scrollbar-track {
+    background: var(--bg-primary);
+}
+
+.network-list::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 5px;
+}
+
+.network-item {
+    padding: 12px;
+    margin: 8px 0;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--text-muted);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.network-item:hover {
+    border-color: var(--border-color);
+    box-shadow: var(--glow);
+    transform: translateX(5px);
+}
+
+.network-item.selected {
+    border-color: var(--accent-color);
+    background-color: rgba(0, 255, 255, 0.1);
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+}
+
+.network-ssid {
+    font-weight: bold;
+    color: var(--text-primary);
+    margin-bottom: 5px;
+}
+
+.network-info {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* Service Status */
+.service-status {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 15px;
+    padding: 15px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--text-muted);
+    border-radius: 3px;
+    transition: all 0.3s ease;
+}
+
+.service-status:hover {
+    border-color: var(--border-color);
+    box-shadow: var(--glow);
+}
+
+.service-info {
+    flex: 1;
+}
+
+.service-name {
+    font-weight: bold;
+    font-size: 16px;
+    color: var(--text-primary);
+    margin-bottom: 5px;
+}
+
+.service-details {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.service-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.service-actions button {
+    padding: 8px 15px;
+    font-size: 12px;
+    margin: 0;
+}
+
+/* Loading State */
+.loading {
+    opacity: 0.6;
+    pointer-events: none;
+    position: relative;
+}
+
+.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+    border: 2px solid var(--border-color);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .container {
+        padding: 10px;
+    }
+    
+    .terminal-title {
+        font-size: 18px;
+    }
+    
+    .service-status {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .service-actions {
+        width: 100%;
+    }
+    
+    .service-actions button {
+        flex: 1;
+    }
+}
+
+/* Scanline Effect */
+@keyframes scanline {
+    0% {
+        transform: translateY(-100%);
+    }
+    100% {
+        transform: translateY(100vh);
+    }
+}
+
+body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(
+        to bottom,
+        transparent 50%,
+        rgba(0, 255, 0, 0.02) 50%
+    );
+    background-size: 100% 4px;
+    pointer-events: none;
+    z-index: 9999;
+    animation: scanline 8s linear infinite;
+}
+
+/* CRT Curve Effect (subtle) */
+body::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(
+        ellipse at center,
+        transparent 0%,
+        rgba(0, 0, 0, 0.3) 100%
+    );
+    pointer-events: none;
+    z-index: 9998;
+}
+
+/* Theme Toggle Button */
+.theme-toggle {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 10000;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 2px solid var(--border-color);
+    border-radius: 50px;
+    padding: 12px 20px;
+    box-shadow: var(--glow-strong);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+    text-transform: uppercase;
+}
+
+.theme-toggle:hover {
+    background-color: var(--border-color);
+    color: var(--bg-primary);
+    transform: translateY(-2px);
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+}
+
+@media (max-width: 768px) {
+    .theme-toggle {
+        bottom: 10px;
+        right: 10px;
+        padding: 10px 16px;
+        font-size: 12px;
+    }
+}
+

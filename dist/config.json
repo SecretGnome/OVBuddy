@@ -1,0 +1,15 @@
+{
+  "stations": ["Zürich Saalsporthalle", "Zürich, Saalsporthalle"],
+  "lines": ["S4", "T13", "T5"],
+  "refresh_interval": 20,
+  "config_display_duration": 6,
+  "qr_code_display_duration": 10,
+  "destination_prefixes_to_remove": ["Zurich ", "Zurich, ", "Zuerich ", "Zuerich, ", "Zürich ", "Zürich, "],
+  "destination_exceptions": ["HB", "Hbf"],
+  "inverted": false,
+  "max_departures": 6,
+  "flip_display": false,
+  "use_partial_refresh": false,
+  "update_repository_url": "https://github.com/SecretGnome/OVBuddy"
+}
+

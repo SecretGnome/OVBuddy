@@ -1,0 +1,22 @@
+[Unit]
+Description=OVBuddy web server and Bonjour (mDNS) service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/ovbuddy
+ExecStart=/usr/bin/python3 /home/pi/ovbuddy/ovbuddy_web.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/home/pi/ovbuddy"
+
+[Install]
+WantedBy=multi-user.target
+
+
