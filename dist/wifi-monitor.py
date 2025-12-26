@@ -49,7 +49,9 @@ running = True
 wifi_manager = None  # 'networkmanager' or 'wpa_supplicant'
 ovbuddy_was_active_before_ap = False  # track to avoid display conflicts in AP mode
 boot_connect_deadline = None  # if set, suppress AP fallback until this time
-boot_last_wifi = None  # {"ssid": "...", "password": "..."} for boot attempts
+boot_last_wifi = None  # {"ssid": "...", "password": "..."} for boot attempts (legacy)
+boot_known_wifis = None  # [{"ssid": "...", "password": "..."}...] for boot attempts
+boot_known_idx = 0
 
 def ensure_networkmanager_wifi_ready():
     """Best-effort: ensure NM can manage wlan0 and autoconnect is enabled.
@@ -202,6 +204,32 @@ def get_last_wifi_config():
         "password": str(config.get("last_wifi_password", "") or "")
     }
 
+def get_known_wifis():
+    """Return known WiFi dict from config.json (ssid -> {password,last_connected,last_seen})."""
+    config = load_config()
+    known = config.get("known_wifis", {}) or {}
+    return known if isinstance(known, dict) else {}
+
+def _known_wifi_candidates():
+    """Return known WiFi candidates as list of {ssid,password} sorted by last_connected/last_seen desc."""
+    known = get_known_wifis()
+    candidates = []
+    for ssid, meta in known.items():
+        if not ssid:
+            continue
+        m = meta if isinstance(meta, dict) else {}
+        candidates.append({
+            "ssid": str(ssid),
+            "password": str(m.get("password", "") or ""),
+            "last_connected": str(m.get("last_connected", "") or ""),
+            "last_seen": str(m.get("last_seen", "") or ""),
+        })
+    def key(c):
+        # ISO timestamps sort lexicographically; missing -> empty -> last.
+        return (c.get("last_connected",""), c.get("last_seen",""))
+    candidates.sort(key=key, reverse=True)
+    return candidates
+
 
 def _extract_wpa_supplicant_psk(ssid):
     """Best-effort: extract PSK for SSID from wpa_supplicant config (returns '' for open or not found)."""
@@ -309,7 +337,7 @@ def _extract_nm_psk_for_active_wifi(ssid):
 
 
 def persist_last_wifi_credentials(ssid):
-    """Persist last connected SSID + password (best-effort) into config.json."""
+    """Persist last connected SSID + password + update known_wifis (best-effort)."""
     if not ssid:
         return
     try:
@@ -331,6 +359,22 @@ def persist_last_wifi_credentials(ssid):
         if pwd and pwd != existing_pwd:
             config["last_wifi_password"] = pwd
             changed = True
+
+        # Update known_wifis collection
+        try:
+            known = config.get("known_wifis", {}) or {}
+            if not isinstance(known, dict):
+                known = {}
+            entry = known.get(ssid, {}) if isinstance(known.get(ssid, {}), dict) else {}
+            entry["password"] = pwd if pwd is not None else ""
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
+            entry["last_seen"] = now_iso
+            entry["last_connected"] = now_iso
+            known[ssid] = entry
+            config["known_wifis"] = known
+            changed = True
+        except Exception as e:
+            logger.debug(f"Could not update known_wifis: {e}")
 
         if changed:
             save_config(config)
@@ -869,6 +913,7 @@ def switch_to_client_mode():
 def main():
     """Main monitoring loop"""
     global current_mode, disconnect_start_time, running, wifi_manager
+    global boot_known_wifis, boot_known_idx
     
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -919,27 +964,33 @@ def main():
             logger.info("Starting in client mode (WiFi connected)")
             clear_force_ap_flag()
         else:
-            boot_wifi = get_last_wifi_config()
-            if boot_wifi.get("ssid"):
+            candidates = _known_wifi_candidates()
+            # Backward compat: if no known_wifis, fall back to last_wifi_ssid
+            if not candidates:
+                boot_wifi = get_last_wifi_config()
+                if boot_wifi.get("ssid"):
+                    candidates = [boot_wifi]
+            if candidates:
                 global boot_connect_deadline, boot_last_wifi
-                boot_last_wifi = boot_wifi
+                boot_last_wifi = candidates[0]
+                boot_known_wifis = candidates
+                boot_known_idx = 0
                 boot_connect_deadline = time.time() + BOOT_CONNECT_TIMEOUT
-                pwd_present = bool(boot_wifi.get("password"))
                 logger.info(
-                    f"WiFi not connected at startup. Will try last-known WiFi '{boot_wifi['ssid']}' "
+                    f"WiFi not connected at startup. Will try {len(candidates)} known WiFi network(s) "
                     f"for up to {BOOT_CONNECT_TIMEOUT}s before AP fallback."
                 )
-                logger.info(f"Last-known WiFi password present: {pwd_present}")
-                # Kick off a best-effort connect attempt (non-blocking for the rest of the logic)
+                # Kick off a best-effort connect attempt (non-blocking)
                 try:
-                    attempt_connect_to_last_wifi(boot_wifi["ssid"], boot_wifi.get("password", ""), timeout_seconds=10)
+                    first = candidates[0]
+                    attempt_connect_to_last_wifi(first.get("ssid", ""), first.get("password", ""), timeout_seconds=10)
                 except Exception as e:
                     logger.debug(f"Initial boot connect kick failed: {e}")
 
                 disconnect_start_time = time.time()
                 current_mode = 'client'
             else:
-                logger.info("WiFi not connected at startup (no last-known WiFi saved)")
+                logger.info("WiFi not connected at startup (no known WiFi saved)")
                 disconnect_start_time = time.time()
                 current_mode = 'client'
     
@@ -977,13 +1028,14 @@ def main():
                                 if wifi_manager == 'networkmanager':
                                     ensure_networkmanager_wifi_ready()
                                 # Periodically re-kick connection attempt during boot grace
-                                if boot_last_wifi and (int(disconnect_duration) % 15 == 0):
+                                if boot_known_wifis and (int(disconnect_duration) % 15 == 0):
                                     try:
-                                        attempt_connect_to_last_wifi(
-                                            boot_last_wifi.get("ssid", ""),
-                                            boot_last_wifi.get("password", ""),
-                                            timeout_seconds=10
-                                        )
+                                        # Round-robin through known networks
+                                        if boot_known_idx >= len(boot_known_wifis):
+                                            boot_known_idx = 0
+                                        cand = boot_known_wifis[boot_known_idx]
+                                        boot_known_idx += 1
+                                        attempt_connect_to_last_wifi(cand.get("ssid", ""), cand.get("password", ""), timeout_seconds=10)
                                     except Exception:
                                         pass
                                 time.sleep(CHECK_INTERVAL)
@@ -992,6 +1044,8 @@ def main():
                                 logger.warning("Boot reconnect grace expired; entering AP mode")
                                 boot_connect_deadline = None
                                 boot_last_wifi = None
+                                boot_known_wifis = None
+                                boot_known_idx = 0
                                 if switch_to_ap_mode():
                                     disconnect_start_time = None
                                 else:

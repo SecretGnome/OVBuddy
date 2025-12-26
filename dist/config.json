@@ -8,15 +8,17 @@
   "destination_exceptions": ["HB", "Hbf"],
   "inverted": false,
   "max_departures": 6,
+  "display_orientation": "bottom",
   "flip_display": false,
   "use_partial_refresh": false,
   "update_repository_url": "https://github.com/SecretGnome/OVBuddy",
   "ap_fallback_enabled": true,
   "ap_ssid": "OVBuddy",
-  "auto_update": false,
+  "auto_update": true,
   "ap_password": "password",
   "display_ap_password": true,
   "last_wifi_ssid": "",
-  "last_wifi_password": ""
+  "last_wifi_password": "",
+  "known_wifis": {}
 }
 
