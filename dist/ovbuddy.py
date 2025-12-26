@@ -3128,6 +3128,21 @@ if FLASK_AVAILABLE:
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @app.route('/api/reboot', methods=['POST'])
+    def reboot_device():
+        """Reboot the Raspberry Pi (requires passwordless sudo)."""
+        try:
+            write_ui_event("Reboot", "Rebooting device...", duration_seconds=6)
+            subprocess.Popen(
+                ['sudo', '-n', 'systemctl', 'reboot'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            return jsonify({"success": True, "message": "Reboot triggered", "reboot": True})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @app.route('/api/update', methods=['POST'])
     def trigger_update():
         """Trigger a system update"""

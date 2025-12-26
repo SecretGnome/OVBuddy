@@ -519,16 +519,14 @@ if [ "$DEPLOY_MAIN_ONLY" != true ]; then
     fi
 fi
 
-# Setup passwordless sudo if not already configured
+# Setup / refresh passwordless sudo configuration (required for web actions + auto-update reboot)
 echo ""
 echo -e "${YELLOW}Checking passwordless sudo configuration...${NC}"
 PASSWORDLESS_SUDO=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n echo 'test' > /dev/null 2>&1 && echo 'true' || echo 'false'" 2>/dev/null)
 
-if [ "$PASSWORDLESS_SUDO" != "true" ]; then
-    echo -e "${YELLOW}  Setting up passwordless sudo...${NC}"
-    
-    # Create sudoers configuration for passwordless sudo
-    SUDOERS_CONTENT="# OVBuddy passwordless sudo configuration
+echo -e "${YELLOW}Preparing sudoers rules...${NC}"
+# Create sudoers configuration for passwordless sudo (we may install/refresh it below)
+SUDOERS_CONTENT="# OVBuddy passwordless sudo configuration
 # Allows OVBuddy service to perform necessary system operations
 
 # Allow systemctl commands for ovbuddy services
@@ -545,6 +543,11 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl status ovbuddy-web
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable ovbuddy-web
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl disable ovbuddy-web
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload
+
+# Allow reboot (used after successful auto-update)
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reboot
+${PI_USER} ALL=(ALL) NOPASSWD: /sbin/reboot
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/sbin/reboot
 
 # Allow network configuration commands
 ${PI_USER} ALL=(ALL) NOPASSWD: /sbin/iwlist * scan
@@ -583,6 +586,10 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash ${REMOTE_DIR}/force-ap-mode.sh
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/bash /home/${PI_USER}/ovbuddy/install-all-services.sh
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash /home/${PI_USER}/ovbuddy/install-all-services.sh
 
+# Allow install-service.sh to run (used by auto-updater)
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/bash /home/${PI_USER}/ovbuddy/install-service.sh
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash /home/${PI_USER}/ovbuddy/install-service.sh
+
 # Allow copying files to system directories (needed for service installation)
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/cp
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp
@@ -599,11 +606,11 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/chmod
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod
 "
 
-    # Upload and install sudoers configuration
+install_or_refresh_sudoers() {
+    echo -e "${YELLOW}  Installing/updating sudoers rules...${NC}"
     # First, upload the sudoers content to a temp file
     echo "$SUDOERS_CONTENT" | sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cat > /tmp/ovbuddy-sudoers"
-    
-    # Create a script that reads password from a file (more secure)
+    # Create a script that validates and installs sudoers
     sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cat > /tmp/install-sudoers.sh" << 'INSTALL_SCRIPT_EOF'
 #!/bin/bash
 # Read password from first argument
@@ -625,30 +632,39 @@ else
     exit 1
 fi
 INSTALL_SCRIPT_EOF
-    
     # Make script executable and run it with password as argument
     sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "chmod +x /tmp/install-sudoers.sh" > /dev/null 2>&1
     RESULT=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "/tmp/install-sudoers.sh '${PI_PASSWORD}'" 2>&1)
-    
     if echo "$RESULT" | grep -q "SUCCESS"; then
-        echo -e "${GREEN}  ✓ Passwordless sudo configured${NC}"
-        # Re-check to confirm it's working (wait a moment for sudo to refresh)
+        echo -e "${GREEN}  ✓ Sudoers rules installed/updated${NC}"
         sleep 1
         PASSWORDLESS_SUDO=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n echo 'test' > /dev/null 2>&1 && echo 'true' || echo 'false'" 2>/dev/null)
         if [ "$PASSWORDLESS_SUDO" != "true" ]; then
-            echo -e "${YELLOW}  ⚠ Passwordless sudo configured but check failed - will prompt for password${NC}"
+            echo -e "${YELLOW}  ⚠ Sudoers installed but passwordless sudo check failed${NC}"
             PASSWORDLESS_SUDO="false"
         fi
     else
-        echo -e "${YELLOW}  ⚠ Could not configure passwordless sudo (will prompt for password)${NC}"
+        echo -e "${YELLOW}  ⚠ Could not install/update sudoers${NC}"
         if [ -n "$RESULT" ]; then
             echo -e "${YELLOW}     Error: $(echo "$RESULT" | head -1)${NC}"
         fi
         PASSWORDLESS_SUDO="false"
     fi
+}
+
+if [ "$PASSWORDLESS_SUDO" != "true" ]; then
+    echo -e "${YELLOW}  Passwordless sudo not enabled yet; configuring...${NC}"
+    install_or_refresh_sudoers
 else
-    echo -e "${GREEN}  ✓ Passwordless sudo already configured${NC}"
-    PASSWORDLESS_SUDO="true"
+    echo -e "${GREEN}  ✓ Passwordless sudo is enabled${NC}"
+    # Even if passwordless sudo is enabled, ensure required rules exist (reboot + install-service.sh).
+    NEED_RULES=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n grep -q '/bin/systemctl reboot' /etc/sudoers.d/ovbuddy 2>/dev/null && sudo -n grep -q 'install-service\\.sh' /etc/sudoers.d/ovbuddy 2>/dev/null && echo 'false' || echo 'true'" 2>/dev/null || echo 'true')
+    if [ "$NEED_RULES" = "true" ]; then
+        echo -e "${YELLOW}  Updating sudoers to include reboot/update rules...${NC}"
+        install_or_refresh_sudoers
+    else
+        echo -e "${GREEN}  ✓ Sudoers rules already include reboot/update permissions${NC}"
+    fi
 fi
 
 # Fix Bonjour/mDNS setup (always run, regardless of PI_HOST format or deployment type)

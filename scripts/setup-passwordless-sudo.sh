@@ -78,6 +78,15 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable ovbuddy-web
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl disable ovbuddy-web
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload
 
+# Allow reboot (used after successful auto-update)
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reboot
+${PI_USER} ALL=(ALL) NOPASSWD: /sbin/reboot
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/sbin/reboot
+
+# Allow service install script used by updater (copies service units, restarts services)
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/bash /home/pi/ovbuddy/install-service.sh
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash /home/pi/ovbuddy/install-service.sh
+
 # Allow network configuration commands
 ${PI_USER} ALL=(ALL) NOPASSWD: /sbin/iwlist * scan
 ${PI_USER} ALL=(ALL) NOPASSWD: /sbin/wpa_cli *

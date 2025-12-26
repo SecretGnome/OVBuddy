@@ -829,6 +829,38 @@ function clearKnownNetworks() {
     });
 }
 
+function rebootPi() {
+    const btn = document.getElementById('rebootButton');
+    if (!confirm('Reboot the Pi now? You will lose connection for ~1 minute.')) {
+        return;
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Rebooting...';
+    }
+    fetch('/api/reboot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showMessage('Reboot triggered. Please wait ~60 seconds. [OK]', 'success');
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to reboot'), 'error');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Reboot Pi';
+            }
+        }
+    })
+    .catch(err => {
+        console.error('Error rebooting:', err);
+        showMessage('Error rebooting (device may already be rebooting)', 'info');
+    });
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     console.log('OVBuddy Terminal Interface initialized');
