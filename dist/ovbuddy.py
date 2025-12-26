@@ -12,11 +12,13 @@ import io
 import socket
 import subprocess
 import uuid
+import hmac
+import secrets
 from datetime import datetime, timedelta
 
 # Optional imports for web server
 try:
-    from flask import Flask, request, jsonify, render_template
+    from flask import Flask, request, jsonify, render_template, Response
     FLASK_AVAILABLE = True
 except ImportError:
     FLASK_AVAILABLE = False
@@ -275,6 +277,7 @@ def load_config():
             LAST_WIFI_PASSWORD = str(config.get("last_wifi_password", DEFAULT_CONFIG["last_wifi_password"]))
             known = config.get("known_wifis", DEFAULT_CONFIG["known_wifis"])
             KNOWN_WIFIS = known if isinstance(known, dict) else {}
+
             
             print(f"Configuration loaded from {CONFIG_FILE}")
         except json.JSONDecodeError as e:
@@ -307,7 +310,9 @@ def save_config():
             "auto_update": AUTO_UPDATE,
             "last_wifi_ssid": LAST_WIFI_SSID,
             "last_wifi_password": LAST_WIFI_PASSWORD,
-            "known_wifis": KNOWN_WIFIS
+            "known_wifis": KNOWN_WIFIS,
+
+            # NOTE: web authentication is stored on the boot partition (SD card root), not in config.json.
         }
         
         try:
@@ -406,6 +411,165 @@ def update_config(new_config):
             KNOWN_WIFIS = new_config["known_wifis"]
     
     return save_config()
+
+# --------------------------
+# WEB AUTH (BASIC AUTH)
+# --------------------------
+WEB_AUTH_FILENAME = "ovbuddy-web-auth.txt"
+
+# Cache structure: {"path": str, "mtime": float, "user": str, "password": str}
+_WEB_AUTH_CACHE = {"path": "", "mtime": 0.0, "user": "", "password": ""}
+
+
+def _boot_root_dir():
+    """Return the boot partition mountpoint (SD card root) on Raspberry Pi OS.
+
+    Common mounts:
+    - /boot/firmware (newer OS images)
+    - /boot (older OS images)
+    """
+    for candidate in ("/boot/firmware", "/boot"):
+        try:
+            if os.path.isdir(candidate):
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _web_auth_file_path() -> str:
+    boot = _boot_root_dir()
+    if not boot:
+        # Developer machines won’t have /boot mounted; keep the error explicit.
+        raise FileNotFoundError("Boot partition not found (expected /boot/firmware or /boot)")
+    return os.path.join(boot, WEB_AUTH_FILENAME)
+
+
+def _parse_web_auth_text(text: str):
+    """Parse the auth file.
+
+    Supported formats:
+    - KEY=VALUE lines: USER/USERNAME and PASS/PASSWORD
+    - single line "username:password"
+    """
+    if not text:
+        return "", ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    if not lines:
+        return "", ""
+
+    # username:password
+    if len(lines) == 1 and ":" in lines[0] and "=" not in lines[0]:
+        u, p = lines[0].split(":", 1)
+        return u.strip(), p.strip()
+
+    kv = {}
+    for ln in lines:
+        if "=" not in ln:
+            continue
+        k, v = ln.split("=", 1)
+        kv[k.strip().lower()] = v.strip()
+
+    user = kv.get("user") or kv.get("username") or ""
+    pw = kv.get("pass") or kv.get("password") or ""
+    return user, pw
+
+
+def _read_web_auth_file_cached():
+    path = _web_auth_file_path()
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        return path, "", "", False
+
+    if _WEB_AUTH_CACHE["path"] == path and _WEB_AUTH_CACHE["mtime"] == mtime:
+        return path, _WEB_AUTH_CACHE["user"], _WEB_AUTH_CACHE["password"], True
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        user, pw = _parse_web_auth_text(text)
+        _WEB_AUTH_CACHE.update({"path": path, "mtime": mtime, "user": user, "password": pw})
+        return path, user, pw, True
+    except Exception:
+        return path, "", "", False
+
+
+def _write_web_auth_file(username: str, password: str):
+    """Write credentials to the boot-partition auth file.
+
+    Attempts direct write; if permission denied, retries via `sudo -n` (requires passwordless sudo).
+    """
+    path = _web_auth_file_path()
+    username = str(username or "").strip()
+    password = str(password or "")
+    if not username or not password:
+        raise ValueError("username and password are required")
+
+    content = f"USERNAME={username}\nPASSWORD={password}\n"
+    tmp_path = os.path.join("/tmp", f"{WEB_AUTH_FILENAME}.{uuid.uuid4().hex}.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    try:
+        # Try direct write first
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except PermissionError:
+        # Retry with sudo
+        cp = subprocess.run(["sudo", "-n", "cp", tmp_path, path], capture_output=True, text=True)
+        if cp.returncode != 0:
+            raise PermissionError(f"Failed to write {path} (sudo cp): {cp.stderr.strip() or cp.stdout.strip()}")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    # Refresh cache
+    try:
+        mtime = os.path.getmtime(path)
+        _WEB_AUTH_CACHE.update({"path": path, "mtime": mtime, "user": username, "password": password})
+    except Exception:
+        _WEB_AUTH_CACHE.update({"path": path, "mtime": 0.0, "user": username, "password": password})
+
+
+def _web_auth_configured() -> bool:
+    _, user, pw, ok = _read_web_auth_file_cached()
+    return bool(ok and user and pw)
+
+
+def _ensure_web_auth_initialized():
+    """Ensure the SD-card-root auth file exists; generate if missing/empty."""
+    try:
+        path, user, pw, ok = _read_web_auth_file_cached()
+        if ok and user and pw:
+            return
+
+        if not FLASK_AVAILABLE:
+            return
+
+        username = "admin"
+        generated_pw = secrets.token_urlsafe(18)
+        _write_web_auth_file(username, generated_pw)
+        print(f"WARNING: Web auth file missing/invalid; generated new credentials at {path}")
+        print(f"Generated web UI credentials: username={username} password={generated_pw}")
+        write_ui_event("Web UI", f"Login: {username} / {generated_pw}", duration_seconds=12)
+    except Exception as e:
+        print(f"ERROR: failed to initialize web auth: {e}")
+
+
+def _check_basic_auth(username: str, password: str) -> bool:
+    """Validate credentials against the SD-card-root auth file (plaintext)."""
+    if not username:
+        return False
+    try:
+        _, user, pw, ok = _read_web_auth_file_cached()
+        if not ok or not user or not pw:
+            return False
+        return hmac.compare_digest(str(username), str(user)) and hmac.compare_digest(str(password or ""), str(pw))
+    except Exception:
+        return False
 
 # --------------------------
 # VERSION CHECKING AND UPDATE FUNCTIONS
@@ -2748,6 +2912,22 @@ zeroconf = None
 service_info = None
 
 if FLASK_AVAILABLE:
+    def _basic_auth_challenge():
+        resp = Response("Unauthorized", 401)
+        resp.headers["WWW-Authenticate"] = 'Basic realm="OVBuddy"'
+        return resp
+
+    @app.before_request
+    def _require_basic_auth():
+        # If the auth file doesn't exist yet, create it (best-effort) so the UI is always protected.
+        if not _web_auth_configured():
+            _ensure_web_auth_initialized()
+        auth = request.authorization
+        if not auth or not _check_basic_auth(auth.username, auth.password):
+            return _basic_auth_challenge()
+        return None
+
+if FLASK_AVAILABLE:
     @app.route('/test')
     def test():
         """Simple test endpoint to verify Flask is working"""
@@ -2791,6 +2971,54 @@ if FLASK_AVAILABLE:
                 return jsonify({"success": True})
             else:
                 return jsonify({"success": False, "error": "Failed to save configuration"}), 500
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+
+    @app.route('/api/web-auth', methods=['GET'])
+    def web_auth_status():
+        """Get Basic Auth status (no secrets)."""
+        try:
+            path, user, _, ok = _read_web_auth_file_cached()
+            return jsonify({
+                "enabled": True,
+                "source": "sd_root_file",
+                "path": path,
+                "exists": bool(ok),
+                "username": user or ""
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route('/api/web-auth', methods=['POST'])
+    def web_auth_update():
+        """Update Basic Auth credentials or rotate to a new random password."""
+        try:
+            data = request.get_json() or {}
+            if bool(data.get("reset", False)):
+                username = str(data.get("username", "") or "").strip() or "admin"
+                generated_pw = secrets.token_urlsafe(18)
+                _write_web_auth_file(username, generated_pw)
+                write_ui_event("Web UI", "Rotated web login", duration_seconds=5)
+                return jsonify({
+                    "success": True,
+                    "message": "Web auth rotated. Use the new password shown below.",
+                    "username": username,
+                    "generated_password": generated_pw
+                })
+
+            username = str(data.get("username", "") or "").strip()
+            password = str(data.get("password", "") or "")
+
+            if not username:
+                return jsonify({"success": False, "error": "Username is required"}), 400
+            if not password:
+                # Username-only updates aren't supported with plaintext file; require password too.
+                return jsonify({"success": False, "error": "Password is required"}), 400
+            if len(password) < 8:
+                return jsonify({"success": False, "error": "Password must be at least 8 characters"}), 400
+            _write_web_auth_file(username, password)
+            write_ui_event("Web UI", "Updated web login", duration_seconds=5)
+            return jsonify({"success": True, "message": "Web auth updated. Refresh may prompt for new credentials."})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 400
 
@@ -3198,6 +3426,9 @@ def start_web_server():
         print("Web server not available (Flask not installed)")
         print("  Install with: pip3 install flask")
         return
+
+    # Ensure Basic Auth credentials exist before serving requests.
+    _ensure_web_auth_initialized()
     
     def run_server():
         try:
