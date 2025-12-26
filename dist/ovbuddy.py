@@ -345,35 +345,49 @@ def get_latest_version_from_github(repo_url):
     Returns: version string (e.g., '0.0.1') or None if error
     """
     try:
-        # Parse repository URL to get owner and repo name
-        # Expected formats:
-        # - https://github.com/owner/repo
-        # - https://github.com/owner/repo.git
-        # - github.com/owner/repo
-        
-        repo_url = repo_url.rstrip('/')
-        if repo_url.endswith('.git'):
-            repo_url = repo_url[:-4]
-        
-        # Extract owner and repo from URL
-        parts = repo_url.replace('https://', '').replace('http://', '').split('/')
-        if len(parts) < 3 or parts[0] != 'github.com':
+        owner, repo = _parse_github_owner_repo(repo_url)
+        if not owner or not repo:
             print(f"Invalid GitHub repository URL: {repo_url}")
             return None
-        
-        owner = parts[1]
-        repo = parts[2]
-        
-        # Fetch tags from GitHub API
-        api_url = f"https://api.github.com/repos/{owner}/{repo}/tags"
-        print(f"Checking for updates at: {api_url}")
-        
+
         headers = {
             "Accept": "application/vnd.github+json",
             # A UA helps with some proxies and keeps GitHub happy.
             "User-Agent": f"OVBuddy/{VERSION}",
         }
+
+        def _capture_meta(resp, source: str):
+            try:
+                _UPDATE_CHECK_CACHE["github_status"] = resp.status_code
+                _UPDATE_CHECK_CACHE["github_rate_remaining"] = resp.headers.get("X-RateLimit-Remaining")
+                _UPDATE_CHECK_CACHE["github_rate_reset"] = resp.headers.get("X-RateLimit-Reset")
+                _UPDATE_CHECK_CACHE["github_source"] = source
+            except Exception:
+                pass
+
+        # Prefer the latest *release* tag if present (matches /releases).
+        rel_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+        print(f"Checking for updates at: {rel_url}")
+        rel = requests.get(rel_url, timeout=10, headers=headers)
+        _capture_meta(rel, "releases_latest")
+        if rel.status_code == 200:
+            payload = rel.json() or {}
+            tag = payload.get("tag_name") or payload.get("name")
+            if tag:
+                _UPDATE_CHECK_CACHE["github_message"] = None
+                print(f"Latest version on GitHub (release): {tag}")
+                return str(tag)
+        else:
+            try:
+                _UPDATE_CHECK_CACHE["github_message"] = (rel.json() or {}).get("message")
+            except Exception:
+                _UPDATE_CHECK_CACHE["github_message"] = None
+
+        # Fallback: fetch tags and sort numerically.
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/tags"
+        print(f"Falling back to tags at: {api_url}")
         response = requests.get(api_url, timeout=10, headers=headers)
+        _capture_meta(response, "tags")
         if response.status_code != 200:
             msg = None
             try:
@@ -381,36 +395,36 @@ def get_latest_version_from_github(repo_url):
                 msg = payload.get("message")
             except Exception:
                 msg = None
+            _UPDATE_CHECK_CACHE["github_message"] = msg
             print(f"GitHub API returned status {response.status_code}" + (f": {msg}" if msg else ""))
             return None
         
         tags = response.json()
         if not tags or len(tags) == 0:
+            _UPDATE_CHECK_CACHE["github_message"] = "No tags found in repository"
             print("No tags found in repository")
             return None
         
-        # Sort tags by version number (not alphabetically)
-        # GitHub API may return tags in different orders
         def get_version_key(tag_name):
             """Extract version for sorting"""
             try:
                 # Remove 'v' prefix if present
-                version_str = tag_name.lstrip('v')
+                version_str = str(tag_name).lstrip('v')
                 # Split and convert to tuple of integers for proper sorting
                 parts = [int(x) for x in version_str.split('.')]
                 # Pad with zeros to handle different lengths (e.g., 0.0.4 vs 0.0.5)
                 while len(parts) < 3:
                     parts.append(0)
                 return tuple(parts)
-            except:
+            except Exception:
                 # If parsing fails, return a tuple that sorts last
                 return (0, 0, 0)
         
         # Sort tags by version (newest first)
-        sorted_tags = sorted(tags, key=lambda t: get_version_key(t['name']), reverse=True)
-        latest_tag = sorted_tags[0]['name']
+        sorted_tags = sorted(tags, key=lambda t: get_version_key(t.get('name', '')), reverse=True)
+        latest_tag = sorted_tags[0].get('name')
         print(f"Latest version on GitHub: {latest_tag}")
-        
+        _UPDATE_CHECK_CACHE["github_message"] = None
         return latest_tag
     
     except requests.exceptions.Timeout:
@@ -435,8 +449,26 @@ _UPDATE_CHECK_CACHE = {
     "latest_version": None,
     "update_available": False,
     "error": None,
+    "repo_url": None,
+    "github_status": None,
+    "github_message": None,
+    "github_rate_remaining": None,
+    "github_rate_reset": None,
+    "github_source": None,  # "releases_latest" | "tags"
 }
 _UPDATE_CHECK_TTL_SECONDS = 10 * 60  # 10 minutes
+
+def _parse_github_owner_repo(repo_url: str):
+    """Parse GitHub repo URL into (owner, repo) or (None, None) if invalid."""
+    if not repo_url:
+        return (None, None)
+    u = str(repo_url).rstrip('/')
+    if u.endswith('.git'):
+        u = u[:-4]
+    parts = u.replace('https://', '').replace('http://', '').split('/')
+    if len(parts) < 3 or parts[0] != 'github.com':
+        return (None, None)
+    return (parts[1], parts[2])
 
 def check_for_updates_cached(force: bool = False):
     """Cached update check.
@@ -451,6 +483,7 @@ def check_for_updates_cached(force: bool = False):
 
         print(f"Current version: {VERSION}")
         print(f"Checking repository: {UPDATE_REPOSITORY_URL}")
+        _UPDATE_CHECK_CACHE["repo_url"] = UPDATE_REPOSITORY_URL
         
         latest_version = get_latest_version_from_github(UPDATE_REPOSITORY_URL)
         if latest_version is None:
@@ -2644,8 +2677,14 @@ if FLASK_AVAILABLE:
                 "update_available": update_available,
                 "update_status": update_status,
                 "needs_restart": version_mismatch or update_status.get("update_in_progress", False),
+                "update_repository_url": UPDATE_REPOSITORY_URL,
                 "update_check_cached_at": _UPDATE_CHECK_CACHE.get("checked_at", 0.0),
-                "update_check_error": _UPDATE_CHECK_CACHE.get("error")
+                "update_check_error": _UPDATE_CHECK_CACHE.get("error"),
+                "github_status": _UPDATE_CHECK_CACHE.get("github_status"),
+                "github_message": _UPDATE_CHECK_CACHE.get("github_message"),
+                "github_rate_remaining": _UPDATE_CHECK_CACHE.get("github_rate_remaining"),
+                "github_rate_reset": _UPDATE_CHECK_CACHE.get("github_rate_reset"),
+                "github_source": _UPDATE_CHECK_CACHE.get("github_source"),
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -2661,8 +2700,14 @@ if FLASK_AVAILABLE:
             return jsonify({
                 "update_available": update_available,
                 "latest_version": latest_version,
+                "update_repository_url": UPDATE_REPOSITORY_URL,
                 "update_check_cached_at": _UPDATE_CHECK_CACHE.get("checked_at", 0.0),
                 "update_check_error": _UPDATE_CHECK_CACHE.get("error"),
+                "github_status": _UPDATE_CHECK_CACHE.get("github_status"),
+                "github_message": _UPDATE_CHECK_CACHE.get("github_message"),
+                "github_rate_remaining": _UPDATE_CHECK_CACHE.get("github_rate_remaining"),
+                "github_rate_reset": _UPDATE_CHECK_CACHE.get("github_rate_reset"),
+                "github_source": _UPDATE_CHECK_CACHE.get("github_source"),
             })
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
