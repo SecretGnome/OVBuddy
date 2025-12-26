@@ -92,10 +92,14 @@
                         </div>
                         
                         <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="flip_display" name="flip_display">
-                                Flip Display (rotate 180 degrees)
-                            </label>
+                            <label for="display_orientation">Display Orientation (Ports)</label>
+                            <select id="display_orientation" name="display_orientation">
+                                <option value="bottom">Bottom (default)</option>
+                                <option value="top">Top</option>
+                                <option value="left">Left (90° CW)</option>
+                                <option value="right">Right (90° CCW)</option>
+                            </select>
+                            <div class="help-text">Choose the device orientation by where the ports are</div>
                         </div>
                         
                         <div class="form-group">
@@ -193,6 +197,7 @@
                         <button type="button" id="scanButton" class="secondary" onclick="scanNetworks()">Scan for Networks</button>
                         <button type="button" id="refreshStatusButton" onclick="refreshWifiStatus()">Refresh Status</button>
                         <button type="button" id="forceApButton" onclick="forceApMode()" style="background: #d97706;">Force AP Mode</button>
+                        <button type="button" id="clearKnownNetworksButton" onclick="clearKnownNetworks()" class="danger">Clear Known Networks</button>
                     </div>
                     
                     <div id="networkListContainer" style="display: none;">

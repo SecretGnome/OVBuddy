@@ -76,18 +76,27 @@ DEFAULT_CONFIG = {
     "destination_exceptions": ["HB", "Hbf"],
     "inverted": False,
     "max_departures": 6,
+    # Display orientation:
+    # - bottom: ports at bottom (default)
+    # - top: ports at top (equivalent to legacy flip_display=true)
+    # - left: ports on left (90° CW)
+    # - right: ports on right (90° CCW)
+    "display_orientation": "bottom",
+    # Legacy boolean; still read/written for backward compatibility.
     "flip_display": False,
     "use_partial_refresh": False,
     # Keep this in sync with the web UI footer link + the canonical upstream repo.
     "update_repository_url": "https://github.com/SecretGnome/OVBuddy",
-    "auto_update": False,
+    "auto_update": True,
     "ap_fallback_enabled": True,
     "ap_ssid": "OVBuddy",
     "ap_password": "password",
     "display_ap_password": True,
     # Last-known WiFi (used by wifi-monitor on boot to attempt reconnect before AP fallback)
     "last_wifi_ssid": "",
-    "last_wifi_password": ""
+    "last_wifi_password": "",
+    # Known WiFi networks (SSID -> {password, last_connected, last_seen})
+    "known_wifis": {}
 }
 
 def _parse_bool(value, default=False) -> bool:
@@ -118,7 +127,8 @@ DESTINATION_PREFIXES_TO_REMOVE = DEFAULT_CONFIG["destination_prefixes_to_remove"
 DESTINATION_EXCEPTIONS = DEFAULT_CONFIG["destination_exceptions"]
 INVERTED = DEFAULT_CONFIG["inverted"]
 MAX_DEPARTURES = DEFAULT_CONFIG["max_departures"]
-FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]
+DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
+FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]  # derived from DISPLAY_ORIENTATION on load/save
 USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
 UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
 AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
@@ -128,10 +138,83 @@ AP_PASSWORD = DEFAULT_CONFIG["ap_password"]
 DISPLAY_AP_PASSWORD = DEFAULT_CONFIG["display_ap_password"]
 LAST_WIFI_SSID = DEFAULT_CONFIG["last_wifi_ssid"]
 LAST_WIFI_PASSWORD = DEFAULT_CONFIG["last_wifi_password"]
+KNOWN_WIFIS = DEFAULT_CONFIG["known_wifis"]
 
 # Display constants (not configurable via web)
 DISPLAY_WIDTH = 250
 DISPLAY_HEIGHT = 122
+
+# UI event file: used to show short feedback messages on the e-ink display
+# triggered by web actions (safe IPC between ovbuddy-web and ovbuddy display service).
+UI_EVENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ui_event.json")
+
+def write_ui_event(title: str, message: str, duration_seconds: int = 5):
+    """Write a one-shot UI event for the display loop to show (best-effort)."""
+    try:
+        payload = {
+            "title": str(title or "").strip()[:40],
+            "message": str(message or "").strip()[:200],
+            "created_at": time.time(),
+            "duration": int(max(1, min(30, duration_seconds))),
+        }
+        with open(UI_EVENT_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        print(f"Warning: could not write UI event: {e}")
+
+def _read_ui_event():
+    try:
+        if not os.path.exists(UI_EVENT_FILE):
+            return None
+        with open(UI_EVENT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        title = str(data.get("title", "") or "")
+        msg = str(data.get("message", "") or "")
+        created = float(data.get("created_at", 0.0) or 0.0)
+        duration = int(data.get("duration", 5) or 5)
+        if created <= 0:
+            created = time.time()
+        duration = int(max(1, min(30, duration)))
+        # Drop expired events
+        if time.time() > (created + duration + 5):
+            return None
+        return {"title": title, "message": msg, "created_at": created, "duration": duration}
+    except Exception:
+        return None
+
+def _clear_ui_event():
+    try:
+        if os.path.exists(UI_EVENT_FILE):
+            os.remove(UI_EVENT_FILE)
+    except Exception:
+        pass
+
+def _is_portrait_orientation() -> bool:
+    return DISPLAY_ORIENTATION in ("left", "right")
+
+def _new_oriented_image(bg_color: int):
+    """Create an image in *viewer* orientation.
+
+    - bottom/top: landscape canvas (DISPLAY_WIDTH x DISPLAY_HEIGHT)
+    - left/right: portrait canvas (DISPLAY_HEIGHT x DISPLAY_WIDTH) which will be rotated to panel coords
+    """
+    if _is_portrait_orientation():
+        return Image.new('1', (DISPLAY_HEIGHT, DISPLAY_WIDTH), bg_color)
+    return Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+
+def _apply_display_orientation(image):
+    """Map a viewer-oriented image to the panel buffer orientation (always DISPLAY_WIDTH x DISPLAY_HEIGHT)."""
+    if DISPLAY_ORIENTATION == "top":
+        return image.rotate(180, expand=False)
+    if DISPLAY_ORIENTATION == "left":
+        # left = ports on left = device rotated CW => rotate content CCW to compensate
+        return image.rotate(-90, expand=True)
+    if DISPLAY_ORIENTATION == "right":
+        # right = ports on right = device rotated CCW => rotate content CW to compensate
+        return image.rotate(90, expand=True)
+    return image
 
 # --------------------------
 # CONFIGURATION FUNCTIONS
@@ -140,9 +223,9 @@ def load_config():
     """Load configuration from config.json file"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
-    global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
+    global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     global CONFIG_LAST_MODIFIED
     
     with CONFIG_LOCK:
@@ -173,7 +256,14 @@ def load_config():
             DESTINATION_EXCEPTIONS = config.get("destination_exceptions", DEFAULT_CONFIG["destination_exceptions"])
             INVERTED = _parse_bool(config.get("inverted", DEFAULT_CONFIG["inverted"]), DEFAULT_CONFIG["inverted"])
             MAX_DEPARTURES = max(1, min(20, int(config.get("max_departures", DEFAULT_CONFIG["max_departures"]))))
-            FLIP_DISPLAY = _parse_bool(config.get("flip_display", DEFAULT_CONFIG["flip_display"]), DEFAULT_CONFIG["flip_display"])
+            # Orientation: prefer new field, otherwise fall back to legacy flip_display
+            raw_orientation = config.get("display_orientation", None)
+            if isinstance(raw_orientation, str) and raw_orientation.strip().lower() in ("bottom", "top", "left", "right"):
+                DISPLAY_ORIENTATION = raw_orientation.strip().lower()
+            else:
+                DISPLAY_ORIENTATION = "top" if _parse_bool(config.get("flip_display", DEFAULT_CONFIG["flip_display"]), False) else "bottom"
+            # Keep legacy boolean in sync
+            FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
             USE_PARTIAL_REFRESH = _parse_bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]), DEFAULT_CONFIG["use_partial_refresh"])
             UPDATE_REPOSITORY_URL = config.get("update_repository_url", DEFAULT_CONFIG["update_repository_url"])
             AUTO_UPDATE = _parse_bool(config.get("auto_update", DEFAULT_CONFIG["auto_update"]), DEFAULT_CONFIG["auto_update"])
@@ -183,6 +273,8 @@ def load_config():
             DISPLAY_AP_PASSWORD = _parse_bool(config.get("display_ap_password", DEFAULT_CONFIG["display_ap_password"]), DEFAULT_CONFIG["display_ap_password"])
             LAST_WIFI_SSID = str(config.get("last_wifi_ssid", DEFAULT_CONFIG["last_wifi_ssid"]))
             LAST_WIFI_PASSWORD = str(config.get("last_wifi_password", DEFAULT_CONFIG["last_wifi_password"]))
+            known = config.get("known_wifis", DEFAULT_CONFIG["known_wifis"])
+            KNOWN_WIFIS = known if isinstance(known, dict) else {}
             
             print(f"Configuration loaded from {CONFIG_FILE}")
         except json.JSONDecodeError as e:
@@ -204,7 +296,8 @@ def save_config():
             "destination_exceptions": DESTINATION_EXCEPTIONS,
             "inverted": INVERTED,
             "max_departures": MAX_DEPARTURES,
-            "flip_display": FLIP_DISPLAY,
+            "display_orientation": DISPLAY_ORIENTATION,
+            "flip_display": (DISPLAY_ORIENTATION == "top"),
             "use_partial_refresh": USE_PARTIAL_REFRESH,
             "update_repository_url": UPDATE_REPOSITORY_URL,
             "ap_fallback_enabled": AP_FALLBACK_ENABLED,
@@ -213,7 +306,8 @@ def save_config():
             "display_ap_password": DISPLAY_AP_PASSWORD,
             "auto_update": AUTO_UPDATE,
             "last_wifi_ssid": LAST_WIFI_SSID,
-            "last_wifi_password": LAST_WIFI_PASSWORD
+            "last_wifi_password": LAST_WIFI_PASSWORD,
+            "known_wifis": KNOWN_WIFIS
         }
         
         try:
@@ -242,7 +336,8 @@ def get_config_dict():
             "destination_exceptions": DESTINATION_EXCEPTIONS,
             "inverted": INVERTED,
             "max_departures": MAX_DEPARTURES,
-            "flip_display": FLIP_DISPLAY,
+            "display_orientation": DISPLAY_ORIENTATION,
+            "flip_display": (DISPLAY_ORIENTATION == "top"),
             "use_partial_refresh": USE_PARTIAL_REFRESH,
             "update_repository_url": UPDATE_REPOSITORY_URL,
             "auto_update": AUTO_UPDATE,
@@ -251,16 +346,17 @@ def get_config_dict():
             "ap_password": AP_PASSWORD,
             "display_ap_password": DISPLAY_AP_PASSWORD,
             "last_wifi_ssid": LAST_WIFI_SSID,
-            "last_wifi_password": LAST_WIFI_PASSWORD
+            "last_wifi_password": LAST_WIFI_PASSWORD,
+            "known_wifis": KNOWN_WIFIS
         }
 
 def update_config(new_config):
     """Update configuration from a dictionary (thread-safe)"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
-    global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
+    global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     
     with CONFIG_LOCK:
         if "stations" in new_config:
@@ -279,8 +375,15 @@ def update_config(new_config):
             INVERTED = _parse_bool(new_config["inverted"], INVERTED)
         if "max_departures" in new_config:
             MAX_DEPARTURES = max(1, min(20, int(new_config["max_departures"])))
-        if "flip_display" in new_config:
+        if "display_orientation" in new_config and isinstance(new_config["display_orientation"], str):
+            o = new_config["display_orientation"].strip().lower()
+            if o in ("bottom", "top", "left", "right"):
+                DISPLAY_ORIENTATION = o
+                FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
+        # Backward compat: flip_display updates orientation if provided
+        if "flip_display" in new_config and "display_orientation" not in new_config:
             FLIP_DISPLAY = _parse_bool(new_config["flip_display"], FLIP_DISPLAY)
+            DISPLAY_ORIENTATION = "top" if FLIP_DISPLAY else "bottom"
         if "use_partial_refresh" in new_config:
             USE_PARTIAL_REFRESH = _parse_bool(new_config["use_partial_refresh"], USE_PARTIAL_REFRESH)
         if "update_repository_url" in new_config:
@@ -299,6 +402,8 @@ def update_config(new_config):
             LAST_WIFI_SSID = str(new_config["last_wifi_ssid"])
         if "last_wifi_password" in new_config:
             LAST_WIFI_PASSWORD = str(new_config["last_wifi_password"])
+        if "known_wifis" in new_config and isinstance(new_config["known_wifis"], dict):
+            KNOWN_WIFIS = new_config["known_wifis"]
     
     return save_config()
 
@@ -718,11 +823,11 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
                 f.write(config_backup)
             print("✓ Configuration restored")
         
-        render_update_screen(epd, "Update complete! Please restart device.", target_version, test_mode)
+        render_update_screen(epd, "Update complete! Rebooting...", target_version, test_mode)
         print("\n" + "="*50)
         print("UPDATE COMPLETED SUCCESSFULLY")
         print("="*50)
-        print("\nThe system needs to be restarted to apply changes...")
+        print("\nRebooting to apply changes...")
         
         # Mark update as successful
         set_update_status(in_progress=False, version=target_version, success=True)
@@ -1229,6 +1334,55 @@ def render_qr_code(epd=None, test_mode=False):
         print("Instructions: Scan QR code to access web interface")
         print("(QR code would be displayed on the right, instructions on the left)")
         return
+
+    # Portrait orientations: render a simple text-only "how to reach web UI" screen.
+    if _is_portrait_orientation():
+        try:
+            bg_color = 0 if INVERTED else 255
+            fg_color = 255 if INVERTED else 0
+            image = _new_oriented_image(bg_color)
+            draw = ImageDraw.Draw(image)
+            w, h = image.size
+            font = ImageFont.load_default()
+
+            ssid = ""
+            ip = get_local_ip()
+            if ap_active and ap_info:
+                ssid = safe_ascii(ap_info["ssid"])
+                ip = ap_info["ip"] or "192.168.4.1"
+            else:
+                wifi_status = get_wifi_status()
+                if wifi_status.get("connected") and wifi_status.get("ssid"):
+                    ssid = safe_ascii(wifi_status["ssid"])
+                    if len(ssid) > 20:
+                        ssid = ssid[:17] + "..."
+                    if wifi_status.get("ip"):
+                        ip = wifi_status["ip"]
+
+            lines = [
+                "Web Config",
+                "",
+                f"URL:",
+                safe_ascii(url),
+                "",
+                f"{'AP' if ap_active else 'WiFi'}: {ssid or 'Not connected'}",
+                f"IP: {safe_ascii(str(ip))}",
+                "",
+                f"v{VERSION}",
+            ]
+            y = 2
+            for line in lines:
+                draw.text((4, y), line, font=font, fill=fg_color)
+                y += 14
+                if y > h - 12:
+                    break
+
+            image = _apply_display_orientation(image)
+            epd.display(epd.getbuffer(image))
+            return
+        except Exception as e:
+            print(f"Error rendering QR screen (portrait): {e}")
+            # fall through to normal QR renderer
     
     try:
         # Generate QR code - use smaller version to fit on right side
@@ -1248,17 +1402,18 @@ def render_qr_code(epd=None, test_mode=False):
         fg_color = 255 if INVERTED else 0
         
         # Create display image
-        image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        image = _new_oriented_image(bg_color)
         draw = ImageDraw.Draw(image)
+        w, h = image.size
         
         # Split display: left side for instructions, right side for QR code
         # Reserve more space for text (about 155 pixels), rest for QR code
         text_area_width = 155
-        qr_area_width = DISPLAY_WIDTH - text_area_width - 5  # 5px gap
+        qr_area_width = w - text_area_width - 5  # 5px gap
         
         # Resize QR code to fit in right area
         qr_width, qr_height = qr_image.size
-        max_qr_size = min(qr_area_width, DISPLAY_HEIGHT - 10)  # Leave some margin
+        max_qr_size = min(qr_area_width, h - 10)  # Leave some margin
         
         if qr_width > max_qr_size or qr_height > max_qr_size:
             # Scale down QR code to fit
@@ -1270,7 +1425,7 @@ def render_qr_code(epd=None, test_mode=False):
         
         # Position QR code on the right side (centered vertically)
         qr_x = text_area_width + 5  # Start after text area + gap
-        qr_y = (DISPLAY_HEIGHT - qr_height) // 2
+        qr_y = (h - qr_height) // 2
         
         # Paste QR code onto display
         if INVERTED:
@@ -1423,8 +1578,8 @@ def render_qr_code(epd=None, test_mode=False):
                 # Make sure it doesn't go off screen
                 if url_x < 0:
                     url_x = qr_x
-                if url_x + url_width > DISPLAY_WIDTH:
-                    url_x = DISPLAY_WIDTH - url_width - 2
+                if url_x + url_width > w:
+                    url_x = w - url_width - 2
                 
                 draw.text((url_x, url_y), url_display, font=font, fill=fg_color)
             
@@ -1439,8 +1594,8 @@ def render_qr_code(epd=None, test_mode=False):
                 version_height = 8
             
             # Position in bottom-right corner with small margin
-            version_x = DISPLAY_WIDTH - version_width - 3
-            version_y = DISPLAY_HEIGHT - version_height - 3
+            version_x = w - version_width - 3
+            version_y = h - version_height - 3
             draw.text((version_x, version_y), version_text, font=font, fill=fg_color)
             
         except Exception as e:
@@ -1448,9 +1603,7 @@ def render_qr_code(epd=None, test_mode=False):
             import traceback
             traceback.print_exc()
         
-        # Rotate if needed
-        if FLIP_DISPLAY:
-            image = image.rotate(180, expand=False)
+        image = _apply_display_orientation(image)
         
         # Display
         image_buffer = epd.getbuffer(image)
@@ -1471,8 +1624,9 @@ def render_loading_screen(epd=None, test_mode=False):
         fg_color = 255 if INVERTED else 0
         
         # Create display image
-        image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        image = _new_oriented_image(bg_color)
         draw = ImageDraw.Draw(image)
+        w, h = image.size
         
         # Load font
         font = ImageFont.load_default()
@@ -1484,20 +1638,19 @@ def render_loading_screen(epd=None, test_mode=False):
             " ",
         ]
         total_text_height = len(text_lines) * line_height
-        start_y = (DISPLAY_HEIGHT - total_text_height) // 2
+        start_y = (h - total_text_height) // 2
         
         # Draw each line centered horizontally
         for i, line in enumerate(text_lines):
             # Get text width for centering
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
-            x = (DISPLAY_WIDTH - text_width) // 2
+            x = (w - text_width) // 2
             y = start_y + (i * line_height)
             draw.text((x, y), line, font=font, fill=fg_color)
         
-        # Rotate if needed
-        if FLIP_DISPLAY:
-            image = image.rotate(180, expand=False)
+        # Apply orientation mapping to panel coordinates
+        image = _apply_display_orientation(image)
         
         # Display
         image_buffer = epd.getbuffer(image)
@@ -1527,6 +1680,37 @@ def render_ap_info(ssid, password=None, display_password=False, epd=None, test_m
             print("Password: (none - open network)")
         print("IP: 192.168.4.1:8080")
         return
+
+    # Portrait orientations: keep it simple and readable (text-only).
+    if _is_portrait_orientation():
+        try:
+            bg_color = 0 if INVERTED else 255
+            fg_color = 255 if INVERTED else 0
+            image = _new_oriented_image(bg_color)
+            draw = ImageDraw.Draw(image)
+            w, h = image.size
+            font = ImageFont.load_default()
+            lines = [
+                "AP Mode",
+                f"SSID: {safe_ascii(str(ssid))}",
+            ]
+            if password:
+                lines.append("PWD: " + (safe_ascii(str(password)) if display_password else "********"))
+            else:
+                lines.append("PWD: (open)")
+            lines.extend(["", "Web:", "http://192.168.4.1:8080"])
+            y = 2
+            for line in lines:
+                draw.text((4, y), line, font=font, fill=fg_color)
+                y += 14
+                if y > h - 12:
+                    break
+            image = _apply_display_orientation(image)
+            epd.display(epd.getbuffer(image))
+            return
+        except Exception as e:
+            print(f"Error rendering AP info (portrait): {e}")
+            # fall through to full renderer
     
     try:
         bg_color = 0 if INVERTED else 255
@@ -1630,9 +1814,7 @@ def render_ap_info(ssid, password=None, display_password=False, epd=None, test_m
         y += line_height
         draw.text((5, y), "to configure WiFi", font=font, fill=fg_color)
         
-        # Rotate if needed
-        if FLIP_DISPLAY:
-            image = image.rotate(180, expand=False)
+        image = _apply_display_orientation(image)
         
         # Display
         image_buffer = epd.getbuffer(image)
@@ -1659,8 +1841,9 @@ def render_update_screen(epd=None, status="Updating...", version=None, test_mode
         fg_color = 255 if INVERTED else 0
         
         # Create display image
-        image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        image = _new_oriented_image(bg_color)
         draw = ImageDraw.Draw(image)
+        w, _h = image.size
         
         # Load font
         font = ImageFont.load_default()
@@ -1680,7 +1863,7 @@ def render_update_screen(epd=None, status="Updating...", version=None, test_mode
         else:
             status_y = title_y + line_height + 10
         # Wrap status if too long
-        max_chars = (DISPLAY_WIDTH - 10) // 6
+        max_chars = (w - 10) // 6
         if len(status) > max_chars:
             # Split into multiple lines
             words = status.split()
@@ -1702,9 +1885,8 @@ def render_update_screen(epd=None, status="Updating...", version=None, test_mode
         for i, line in enumerate(status_lines):
             draw.text((5, status_y + i * line_height), line, font=font, fill=fg_color)
         
-        # Rotate if needed
-        if FLIP_DISPLAY:
-            image = image.rotate(180, expand=False)
+        # Apply orientation mapping to panel coordinates
+        image = _apply_display_orientation(image)
         
         # Display
         image_buffer = epd.getbuffer(image)
@@ -1712,6 +1894,50 @@ def render_update_screen(epd=None, status="Updating...", version=None, test_mode
         
     except Exception as e:
         print(f"Error rendering update screen: {e}")
+
+def render_action_screen(epd=None, title="Action", message="", test_mode=False):
+    """Render a short feedback screen for user actions (restart/join wifi/etc)."""
+    if test_mode or epd is None:
+        print(f"[ACTION] {title}: {message}")
+        return
+    try:
+        bg_color = 0 if INVERTED else 255
+        fg_color = 255 if INVERTED else 0
+
+        image = _new_oriented_image(bg_color)
+        draw = ImageDraw.Draw(image)
+        w, _h = image.size
+
+        font = ImageFont.load_default()
+        draw.text((5, 0), safe_ascii(str(title)), font=font, fill=fg_color)
+        draw.line((0, 12, w, 12), fill=fg_color)
+
+        text = safe_ascii(str(message))
+        max_chars = (w - 10) // 6
+        words = text.split()
+        lines = []
+        current = ""
+        for w in words:
+            nxt = (current + " " + w).strip() if current else w
+            if len(nxt) > max_chars:
+                if current:
+                    lines.append(current)
+                current = w
+            else:
+                current = nxt
+        if current:
+            lines.append(current)
+
+        y = 18
+        for line in lines[:6]:
+            draw.text((5, y), line, font=font, fill=fg_color)
+            y += 14
+
+        image = _apply_display_orientation(image)
+
+        epd.display(epd.getbuffer(image))
+    except Exception as e:
+        print(f"Error rendering action screen: {e}")
 
 def format_configuration():
     """Format current configuration as a displayable message"""
@@ -1753,8 +1979,8 @@ def format_configuration():
     
     # Display settings
     display_settings = []
-    if FLIP_DISPLAY:
-        display_settings.append("Flip")
+    if DISPLAY_ORIENTATION and DISPLAY_ORIENTATION != "bottom":
+        display_settings.append(f"Ports:{DISPLAY_ORIENTATION}")
     if INVERTED:
         display_settings.append("Inverted")
     if USE_PARTIAL_REFRESH:
@@ -1826,15 +2052,16 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
     fg_color = 255 if INVERTED else 0  # White if inverted, black if normal
     
     # Create a fresh image each time (don't reuse)
-    image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+    image = _new_oriented_image(bg_color)
     draw = ImageDraw.Draw(image)
+    w, h = image.size
     
     # Ensure we're drawing on a fresh canvas by explicitly filling background
-    draw.rectangle([(0, 0), (DISPLAY_WIDTH, DISPLAY_HEIGHT)], fill=bg_color)
+    draw.rectangle([(0, 0), (w, h)], fill=bg_color)
     
     # Calculate font size based on number of departures to show
     # More space per line = larger font
-    available_height = DISPLAY_HEIGHT - 12  # Subtract header space
+    available_height = h - 12  # Subtract header space
     line_spacing = 3  # Minimum spacing between lines
     # Use actual number of departures (up to MAX_DEPARTURES) for font calculation
     num_departures_to_show = min(len(departures) if departures else 0, MAX_DEPARTURES)
@@ -1859,7 +2086,8 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
             "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
         ]
-        font_size = min(line_height - 2, 16)  # Cap at 16px, leave 2px margin
+        cap = 20 if _is_portrait_orientation() else 16
+        font_size = min(line_height - 2, cap)  # Cap font, leave 2px margin
         font_line = None
         font_line_bold = None
         for font_path in font_paths:
@@ -1889,8 +2117,9 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
         font_line = ImageFont.load_default()
         font_line_bold = font_line
     
-    # Draw header
-    draw.text((0, 0), header_text, font=font_header, fill=fg_color)
+    # Draw header (skip station header in left/right orientation)
+    if not _is_portrait_orientation():
+        draw.text((0, 0), header_text, font=font_header, fill=fg_color)
     
     # Always show update time in top right corner
     current_time = time.strftime("%H:%M")
@@ -1901,10 +2130,10 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
     except:
         # Fallback: approximate width (default font ~6px per char)
         time_width = len(current_time) * 6
-    time_x = DISPLAY_WIDTH - time_width - 2  # 2px margin from right edge
+    time_x = w - time_width - 2  # 2px margin from right edge
     draw.text((time_x, 0), current_time, font=font_header, fill=fg_color)
     
-    draw.line((0, 10, DISPLAY_WIDTH, 10), fill=fg_color)
+    draw.line((0, 10, w, 10), fill=fg_color)
 
     # Draw content
     y = 12
@@ -1919,7 +2148,7 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
                 if line.strip():
                     draw.text((0, y), line.strip(), font=font_line, fill=fg_color)
                     y += 15
-                    if y >= DISPLAY_HEIGHT - 5:
+                    if y >= h - 5:
                         break
         else:
             # Single-line error message, wrap if needed
@@ -1934,7 +2163,7 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
                     if line:
                         draw.text((0, y), line.strip(), font=font_line, fill=fg_color)
                         y += 15
-                        if y >= DISPLAY_HEIGHT - 5:
+                        if y >= h - 5:
                             break
                     line = word + " "
                 else:
@@ -1942,81 +2171,94 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
             if line and y < DISPLAY_HEIGHT - 5:
                 draw.text((0, y), line.strip(), font=font_line, fill=fg_color)
     elif departures:
-        # Clear the departure area first
-        departure_area_top = y
-        departure_area_bottom = DISPLAY_HEIGHT - 5
-        draw.rectangle([(0, departure_area_top), (DISPLAY_WIDTH, departure_area_bottom)], fill=bg_color)
-        
-        # Calculate dynamic line spacing based on available space
-        num_to_show = min(len(departures), MAX_DEPARTURES)
-        available_space = DISPLAY_HEIGHT - y - 5  # Leave 5px bottom margin
-        if num_to_show > 0:
-            line_spacing = max(available_space // num_to_show, 15)  # Minimum 15px spacing
-        else:
-            line_spacing = 20  # Default spacing
-        
-        # Fixed positions for alignment
-        # Estimate character width (monospaced font ~6-7px per char)
-        char_width = 7  # Conservative estimate
-        line_num_x = 0
-        dest_x = 4 * char_width  # After 3-character line number + 1 char space
-        # Right edge for time/delay (will be calculated per line based on actual delay)
-        time_x = DISPLAY_WIDTH - 5  # 5px margin from right edge
-        
-        for entry in departures[:MAX_DEPARTURES]:
-            line_num = format_line_number(entry)  # Always 3 chars, aligned
-            dest_raw = entry["to"]
-            dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
-            time_str = entry["stop"]["departure"][11:16]  # HH:MM
-            
-            # Check for delay (in seconds)
-            # Only show delays that are meaningful (>= 1 minute)
-            delay_str = _format_delay_suffix(entry, for_terminal=False)
-            
-            # Get actual width needed for time (always present)
-            try:
-                bbox = draw.textbbox((0, 0), time_str, font=font_line)
-                time_width = bbox[2] - bbox[0]
-            except:
-                time_width = 5 * char_width  # HH:MM is 5 chars
-            
-            # Get actual width needed for delay (if present)
-            delay_width = 0
-            if delay_str:
+        # Left/right orientation: simplified layout (line + time + delay only)
+        if _is_portrait_orientation():
+            y = 14
+            for entry in departures[:MAX_DEPARTURES]:
+                line_num = format_line_number(entry).strip()
+                time_str = entry["stop"]["departure"][11:16]
+                delay_str = _format_delay_suffix(entry, for_terminal=False)
+                right_text = time_str + (f" {delay_str}" if delay_str else "")
+
+                # Measure right text for alignment
                 try:
-                    bbox = draw.textbbox((0, 0), f" {delay_str}", font=font_line_bold)
-                    delay_width = bbox[2] - bbox[0]
-                except:
-                    delay_width = (1 + len(delay_str)) * char_width  # space + delay text
+                    bbox = draw.textbbox((0, 0), right_text, font=font_line_bold)
+                    right_w = bbox[2] - bbox[0]
+                except Exception:
+                    right_w = len(right_text) * 6
+
+                draw.text((4, y), line_num, font=font_line_bold, fill=fg_color)
+                draw.text((max(40, w - right_w - 4), y), right_text, font=font_line, fill=fg_color)
+                y += max(18, line_height + 4)
+                if y >= h - 10:
+                    break
+        else:
+            # Clear the departure area first
+            departure_area_top = y
+            departure_area_bottom = h - 5
+            draw.rectangle([(0, departure_area_top), (w, departure_area_bottom)], fill=bg_color)
             
-            time_delay_width = time_width + delay_width
+            # Calculate dynamic line spacing based on available space
+            num_to_show = min(len(departures), MAX_DEPARTURES)
+            available_space = h - y - 5  # Leave 5px bottom margin
+            if num_to_show > 0:
+                line_spacing = max(available_space // num_to_show, 15)  # Minimum 15px spacing
+            else:
+                line_spacing = 20  # Default spacing
             
-            # Calculate max width for destination (between line number and time/delay)
-            dest_max_width = time_x - dest_x - time_delay_width - 5  # 5px margin
-            dest_max_chars = max(1, int(dest_max_width / char_width) - 2)  # Leave margin
+            # Fixed positions for alignment
+            # Estimate character width (monospaced font ~6-7px per char)
+            char_width = 7  # Conservative estimate
+            line_num_x = 0
+            dest_x = 4 * char_width  # After 3-character line number + 1 char space
+            # Right edge for time/delay (will be calculated per line based on actual delay)
+            time_x = w - 5  # 5px margin from right edge
             
-            # Truncate destination if needed
-            if len(dest) > dest_max_chars:
-                truncate_to = max(1, dest_max_chars - 3)  # Leave room for "..."
-                dest = dest[:truncate_to] + "..."
-            
-            # Draw components separately for perfect alignment
-            # 1. Line number (always at x=0, 3 chars wide)
-            draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
-            
-            # 2. Destination (after line number with space, no arrow)
-            draw.text((dest_x, y), dest, font=font_line, fill=fg_color)
-            
-            # 3. Time (right-aligned at fixed position)
-            time_draw_x = time_x - time_delay_width  # Right-align using calculated width
-            draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
-            
-            # 4. Delay in bold (if present, immediately after time)
-            if delay_str:
-                delay_draw_x = time_draw_x + time_width
-                draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
-            
-            y += line_spacing  # Dynamic spacing based on available space
+            for entry in departures[:MAX_DEPARTURES]:
+                line_num = format_line_number(entry)  # Always 3 chars, aligned
+                dest_raw = entry["to"]
+                dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
+                time_str = entry["stop"]["departure"][11:16]  # HH:MM
+                
+                # Delay suffix (minutes)
+                delay_str = _format_delay_suffix(entry, for_terminal=False)
+                
+                # Measure time + delay widths
+                try:
+                    bbox = draw.textbbox((0, 0), time_str, font=font_line)
+                    time_width = bbox[2] - bbox[0]
+                except Exception:
+                    time_width = 5 * char_width
+                
+                delay_width = 0
+                if delay_str:
+                    try:
+                        bbox = draw.textbbox((0, 0), f" {delay_str}", font=font_line_bold)
+                        delay_width = bbox[2] - bbox[0]
+                    except Exception:
+                        delay_width = (1 + len(delay_str)) * char_width
+                
+                time_delay_width = time_width + delay_width
+                
+                # Destination truncation
+                dest_max_width = time_x - dest_x - time_delay_width - 5
+                dest_max_chars = max(1, int(dest_max_width / char_width) - 2)
+                if len(dest) > dest_max_chars:
+                    truncate_to = max(1, dest_max_chars - 3)
+                    dest = dest[:truncate_to] + "..."
+                
+                # Draw: line, destination, time, delay
+                draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
+                draw.text((dest_x, y), dest, font=font_line, fill=fg_color)
+                
+                time_draw_x = time_x - time_delay_width
+                draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
+                if delay_str:
+                    delay_draw_x = time_draw_x + time_width
+                    draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
+                
+                y += line_spacing
+            # end not portrait
     else:
         # No departures found
         draw.text((0, y), "No departures", font=font_line, fill=fg_color)
@@ -2027,9 +2269,8 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
     # Note: We don't call epd.sleep() here because it closes the SPI connection
     # The display will stay awake between updates
     try:
-        # Rotate image 180 degrees if FLIP_DISPLAY is enabled
-        if FLIP_DISPLAY:
-            image = image.rotate(180, expand=False)
+        # Map viewer-oriented canvas to panel coordinates
+        image = _apply_display_orientation(image)
         
         # Get the image buffer
         image_buffer = epd.getbuffer(image)
@@ -2358,12 +2599,23 @@ def control_service(service_name, action):
 def connect_to_wifi(ssid, password=None):
     """Connect to a WiFi network using wpa_supplicant or nmcli"""
     try:
-        # Persist last-known WiFi immediately (so it survives reboot even if the
+        # Persist known WiFi immediately (so it survives reboot even if the
         # connection is still in progress / DHCP hasn't completed yet).
         try:
-            global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
+            global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
             LAST_WIFI_SSID = str(ssid)
             LAST_WIFI_PASSWORD = str(password or "")
+            # Update known_wifis
+            now_iso = datetime.now().isoformat()
+            entry = KNOWN_WIFIS.get(LAST_WIFI_SSID, {}) if isinstance(KNOWN_WIFIS, dict) else {}
+            if not isinstance(entry, dict):
+                entry = {}
+            entry["password"] = LAST_WIFI_PASSWORD
+            entry["last_seen"] = now_iso
+            entry["last_connected"] = now_iso
+            if not isinstance(KNOWN_WIFIS, dict):
+                KNOWN_WIFIS = {}
+            KNOWN_WIFIS[LAST_WIFI_SSID] = entry
             save_config()
         except Exception as e:
             print(f"Warning: could not save last WiFi details: {e}")
@@ -2573,6 +2825,8 @@ if FLASK_AVAILABLE:
             
             if not ssid:
                 return jsonify({"success": False, "error": "SSID is required"}), 400
+
+            write_ui_event("WiFi", f"Joining: {ssid}", duration_seconds=6)
             
             result = connect_to_wifi(ssid, password if password else None)
             return jsonify(result)
@@ -2583,6 +2837,7 @@ if FLASK_AVAILABLE:
     def wifi_force_ap():
         """Force the device into Access Point mode by clearing WiFi config and rebooting"""
         try:
+            write_ui_event("WiFi", "Starting AP mode...", duration_seconds=6)
             # Run the force-ap-mode script in background (it will reboot)
             script_dir = os.path.dirname(os.path.abspath(__file__))
             script_path = os.path.join(script_dir, 'force-ap-mode.sh')
@@ -2616,6 +2871,20 @@ if FLASK_AVAILABLE:
                 "success": False,
                 "error": str(e)
             }), 500
+
+    @app.route('/api/wifi/known/clear', methods=['POST'])
+    def wifi_clear_known():
+        """Clear all saved known WiFi networks and last-known WiFi credentials."""
+        try:
+            global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
+            LAST_WIFI_SSID = ""
+            LAST_WIFI_PASSWORD = ""
+            KNOWN_WIFIS = {}
+            save_config()
+            write_ui_event("WiFi", "Cleared known networks", duration_seconds=5)
+            return jsonify({"success": True, "message": "Cleared known networks"})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
     
     @app.route('/api/services/status', methods=['GET'])
     def services_status():
@@ -2637,6 +2906,7 @@ if FLASK_AVAILABLE:
             if service_name not in ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon']:
                 return jsonify({"success": False, "error": "Invalid service name"}), 400
             
+            write_ui_event("Service", f"{action}: {service_name}", duration_seconds=4)
             result = control_service(service_name, action)
             return jsonify(result)
         except Exception as e:
@@ -2716,6 +2986,7 @@ if FLASK_AVAILABLE:
     def shutdown_display():
         """Shutdown: Stop ovbuddy service, clear display, optionally display image"""
         try:
+            write_ui_event("Shutdown", "Stopping service + clearing display...", duration_seconds=6)
             # Check if file was uploaded
             image_file = None
             if 'image' in request.files:
@@ -2810,8 +3081,8 @@ if FLASK_AVAILABLE:
                             if INVERTED:
                                 display_img = display_img.point(lambda x: 0 if x == 255 else 255, mode='1')
                             
-                            # Apply flip if enabled
-                            if FLIP_DISPLAY:
+                            # Apply top-orientation flip for shutdown image (left/right not supported here)
+                            if DISPLAY_ORIENTATION == "top":
                                 display_img = display_img.rotate(180, expand=False)
                             
                             # Convert PIL image to display buffer
@@ -3132,8 +3403,17 @@ def main(test_mode_arg=False, disable_web=False):
                                 # Show rebooting message
                                 render_update_screen(epd, "Rebooting...", latest_version, test_mode_arg)
                                 time.sleep(2)  # Give user time to see the message
-                                # Exit to allow services to restart cleanly
-                                sys.exit(0)
+                                # Reboot to apply changes cleanly
+                                try:
+                                    if not test_mode_arg:
+                                        subprocess.Popen(
+                                            ['sudo', '-n', 'systemctl', 'reboot'],
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL,
+                                            start_new_session=True
+                                        )
+                                finally:
+                                    sys.exit(0)
                             else:
                                 print(f"⚠ install-service.sh failed (exit code {install_result.returncode})")
                                 print(f"stdout: {install_result.stdout}")
@@ -3182,8 +3462,17 @@ def main(test_mode_arg=False, disable_web=False):
                             # Show rebooting message
                             render_update_screen(epd, "Rebooting...", latest_version, test_mode_arg)
                             time.sleep(2)  # Give user time to see the message
-                            # Exit to allow restart
-                            sys.exit(0)
+                            # Reboot to apply changes cleanly
+                            try:
+                                if not test_mode_arg:
+                                    subprocess.Popen(
+                                        ['sudo', '-n', 'systemctl', 'reboot'],
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL,
+                                        start_new_session=True
+                                    )
+                            finally:
+                                sys.exit(0)
                     except Exception as e:
                         print(f"⚠ Could not restart services automatically: {e}")
                         print("Please restart manually:")
@@ -3224,6 +3513,20 @@ def main(test_mode_arg=False, disable_web=False):
     last_ap_screen_key = None  # Avoid re-rendering AP QR screen unnecessarily
     try:
         while True:
+            # If the web UI requested a one-shot on-screen message, show it first.
+            ui_event = _read_ui_event()
+            if ui_event:
+                render_action_screen(
+                    epd,
+                    title=ui_event.get("title", "Action"),
+                    message=ui_event.get("message", ""),
+                    test_mode=test_mode_arg
+                )
+                # Keep it visible briefly, then clear and resume normal loop
+                time.sleep(int(ui_event.get("duration", 5) or 5))
+                _clear_ui_event()
+                continue
+
             # Check for update trigger (from web interface)
             if update_triggered:
                 target_version = update_target_version
@@ -3267,7 +3570,16 @@ def main(test_mode_arg=False, disable_web=False):
                                     services_restarted = True
                                     render_update_screen(epd, "Rebooting...", target_version, test_mode_arg)
                                     time.sleep(2)
-                                    sys.exit(0)
+                                    try:
+                                        if not test_mode_arg:
+                                            subprocess.Popen(
+                                                ['sudo', '-n', 'systemctl', 'reboot'],
+                                                stdout=subprocess.DEVNULL,
+                                                stderr=subprocess.DEVNULL,
+                                                start_new_session=True
+                                            )
+                                    finally:
+                                        sys.exit(0)
                                 else:
                                     print(f"⚠ install-service.sh failed (exit code {install_result.returncode})")
                                     print("Falling back to manual service restart...")
@@ -3295,7 +3607,16 @@ def main(test_mode_arg=False, disable_web=False):
                                 
                                 render_update_screen(epd, "Rebooting...", target_version, test_mode_arg)
                                 time.sleep(2)
-                                sys.exit(0)
+                                try:
+                                    if not test_mode_arg:
+                                        subprocess.Popen(
+                                            ['sudo', '-n', 'systemctl', 'reboot'],
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL,
+                                            start_new_session=True
+                                        )
+                                finally:
+                                    sys.exit(0)
                         except Exception as e:
                             print(f"⚠ Could not restart services automatically: {e}")
                             print("Please restart manually:")

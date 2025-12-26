@@ -58,7 +58,11 @@ function loadConfiguration() {
             
             document.getElementById('max_departures').value = data.max_departures || 10;
             document.getElementById('inverted').checked = data.inverted || false;
-            document.getElementById('flip_display').checked = data.flip_display || false;
+            // Orientation (new)
+            const orientationSelect = document.getElementById('display_orientation');
+            if (orientationSelect) {
+                orientationSelect.value = data.display_orientation || (data.flip_display ? 'top' : 'bottom');
+            }
             document.getElementById('use_partial_refresh').checked = data.use_partial_refresh || false;
             document.getElementById('auto_update').checked = data.auto_update !== undefined ? data.auto_update : true;
             document.getElementById('ap_fallback_enabled').checked = data.ap_fallback_enabled !== undefined ? data.ap_fallback_enabled : true;
@@ -97,7 +101,7 @@ function saveConfiguration(event) {
             .filter(s => s),
         max_departures: parseInt(document.getElementById('max_departures').value),
         inverted: document.getElementById('inverted').checked,
-        flip_display: document.getElementById('flip_display').checked,
+        display_orientation: (document.getElementById('display_orientation')?.value || 'bottom'),
         use_partial_refresh: document.getElementById('use_partial_refresh').checked,
         auto_update: document.getElementById('auto_update').checked,
         ap_fallback_enabled: document.getElementById('ap_fallback_enabled').checked,
@@ -786,6 +790,42 @@ function shutdownDisplay() {
         showMessage('Error shutting down', 'error');
         shutdownButton.disabled = false;
         shutdownButton.textContent = 'Shutdown & Clear Display';
+    });
+}
+
+function clearKnownNetworks() {
+    const btn = document.getElementById('clearKnownNetworksButton');
+    if (!confirm('Clear ALL known WiFi networks? This only clears saved credentials on OVBuddy; it does not change your router.')) {
+        return;
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Clearing...';
+    }
+
+    fetch('/api/wifi/known/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showMessage(data.message || 'Known networks cleared. [OK]', 'success');
+            refreshWifiStatus();
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to clear known networks'), 'error');
+        }
+    })
+    .catch(err => {
+        console.error('Error clearing known networks:', err);
+        showMessage('Error clearing known networks', 'error');
+    })
+    .finally(() => {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Clear Known Networks';
+        }
     });
 }
 
