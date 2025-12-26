@@ -13,7 +13,8 @@ echo ""
 
 # First, install system dependencies
 echo "Installing system dependencies..."
-ssh "${PI_HOST}" "sudo apt-get update && sudo apt-get install -y python3-pip python3-pil python3-numpy libopenjp2-7"
+# `git` is required for the on-device auto-updater (it uses `git clone`).
+ssh "${PI_HOST}" "sudo apt-get update && sudo apt-get install -y git python3-pip python3-pil python3-numpy libopenjp2-7"
 
 # Upload requirements.txt if needed
 echo ""
