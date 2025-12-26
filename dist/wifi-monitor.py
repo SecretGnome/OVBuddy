@@ -29,6 +29,7 @@ FORCE_AP_FLAG = "/var/lib/ovbuddy-force-ap"  # Flag file to force AP mode on boo
 CHECK_INTERVAL = 30  # seconds between checks
 DISCONNECT_THRESHOLD = 120  # seconds before switching to AP mode
 AP_CHECK_INTERVAL = 60  # seconds between WiFi scans when in AP mode
+BOOT_CONNECT_TIMEOUT = 60  # seconds to attempt last-known WiFi on boot before AP fallback
 
 # Logging setup
 logging.basicConfig(
@@ -47,6 +48,20 @@ disconnect_start_time = None
 running = True
 wifi_manager = None  # 'networkmanager' or 'wpa_supplicant'
 ovbuddy_was_active_before_ap = False  # track to avoid display conflicts in AP mode
+
+def clear_force_ap_flag():
+    """Remove the FORCE_AP_FLAG if present.
+
+    This flag is intended as a one-shot request (e.g. set by force-ap-mode.sh).
+    Once we're connected to normal WiFi again, it should be cleared so it
+    doesn't keep influencing mode decisions after reboot.
+    """
+    try:
+        if os.path.exists(FORCE_AP_FLAG):
+            os.remove(FORCE_AP_FLAG)
+            logger.info("Cleared force AP mode flag file")
+    except Exception as e:
+        logger.warning(f"Could not clear force AP flag: {e}")
 
 
 def signal_handler(signum, frame):
@@ -115,6 +130,18 @@ def load_config():
         return {}
 
 
+def save_config(config):
+    """Save configuration back to config.json (best-effort)."""
+    try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+        return True
+    except Exception as e:
+        logger.warning(f"Error saving config: {e}")
+        return False
+
+
 def get_ap_config():
     """Get access point configuration from config.json"""
     config = load_config()
@@ -129,6 +156,116 @@ def get_ap_config():
         'password': ap_password,
         'enabled': ap_enabled
     }
+
+
+def get_last_wifi_config():
+    """Get last-known WiFi credentials from config.json (saved by ovbuddy web UI)."""
+    config = load_config()
+    return {
+        "ssid": str(config.get("last_wifi_ssid", "") or ""),
+        "password": str(config.get("last_wifi_password", "") or "")
+    }
+
+
+def persist_last_wifi_ssid(ssid):
+    """Persist the last connected SSID without overwriting saved password."""
+    if not ssid:
+        return
+    try:
+        config = load_config()
+        if str(config.get("last_wifi_ssid", "") or "") != ssid:
+            config["last_wifi_ssid"] = ssid
+            save_config(config)
+            logger.info(f"Saved last WiFi SSID: {ssid}")
+    except Exception as e:
+        logger.warning(f"Could not persist last WiFi SSID: {e}")
+
+
+def attempt_connect_to_last_wifi(ssid, password, timeout_seconds=BOOT_CONNECT_TIMEOUT):
+    """Try to connect to the provided WiFi for up to timeout_seconds.
+
+    Returns True if connected, False otherwise.
+    """
+    global wifi_manager
+    if not ssid:
+        return False
+
+    logger.info(f"Attempting to connect to last-known WiFi '{ssid}' for up to {timeout_seconds}s...")
+    start = time.time()
+
+    def _try_nmcli():
+        try:
+            cmd = ['nmcli', 'device', 'wifi', 'connect', ssid]
+            if password:
+                cmd += ['password', password]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except Exception as e:
+            logger.debug(f"nmcli connect attempt failed: {e}")
+
+    def _try_wpa_cli():
+        try:
+            # Find existing network id for SSID
+            result = subprocess.run(
+                ['sudo', 'wpa_cli', '-i', 'wlan0', 'list_networks'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            network_id = None
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n')[1:]:
+                    parts = line.split('\t')
+                    if len(parts) >= 2 and parts[1] == ssid:
+                        network_id = parts[0]
+                        break
+
+            if network_id is None:
+                # Create a new network
+                add = subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'add_network'],
+                                     capture_output=True, text=True, timeout=5)
+                if add.returncode != 0 or not add.stdout.strip().isdigit():
+                    return
+                network_id = add.stdout.strip()
+                subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'ssid', f"\"{ssid}\""],
+                               capture_output=True, text=True, timeout=5)
+                if password:
+                    subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'psk', f"\"{password}\""],
+                                   capture_output=True, text=True, timeout=5)
+                else:
+                    subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'key_mgmt', 'NONE'],
+                                   capture_output=True, text=True, timeout=5)
+                subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'priority', '20'],
+                               capture_output=True, text=True, timeout=5)
+                subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'save_config'],
+                               capture_output=True, text=True, timeout=5)
+
+            # Select and reconnect
+            subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'enable_network', network_id],
+                           capture_output=True, text=True, timeout=5)
+            subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'select_network', network_id],
+                           capture_output=True, text=True, timeout=5)
+            subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'reconnect'],
+                           capture_output=True, text=True, timeout=5)
+        except Exception as e:
+            logger.debug(f"wpa_cli connect attempt failed: {e}")
+
+    # Kick off an initial connect attempt
+    if wifi_manager == 'networkmanager':
+        _try_nmcli()
+    else:
+        _try_wpa_cli()
+
+    # Poll connection state up to timeout
+    while time.time() - start < timeout_seconds:
+        if is_wifi_connected():
+            logger.info(f"Connected to WiFi '{ssid}'")
+            persist_last_wifi_ssid(ssid)
+            clear_force_ap_flag()
+            return True
+        time.sleep(3)
+
+    logger.warning(f"Failed to connect to '{ssid}' within {timeout_seconds}s")
+    return False
 
 
 def is_wifi_connected():
@@ -165,6 +302,8 @@ def is_wifi_connected():
         
         ssid = result.stdout.strip()
         logger.debug(f"Connected to WiFi: {ssid}")
+        # Record last connected SSID (password may already be saved by the web UI)
+        persist_last_wifi_ssid(ssid)
         
         # Optional: Test internet connectivity
         try:
@@ -594,20 +733,38 @@ def main():
                 disconnect_start_time = time.time()
                 current_mode = 'client'
     else:
-        # Determine initial mode normally
+        # Determine initial mode normally, but first try last-known WiFi (if any)
         if is_wifi_connected():
             current_mode = 'client'
             logger.info("Starting in client mode (WiFi connected)")
+            clear_force_ap_flag()
         else:
-            logger.info("WiFi not connected at startup")
-            disconnect_start_time = time.time()
-            current_mode = 'client'
+            last_wifi = get_last_wifi_config()
+            if last_wifi.get("ssid"):
+                if attempt_connect_to_last_wifi(last_wifi["ssid"], last_wifi.get("password", ""), BOOT_CONNECT_TIMEOUT):
+                    current_mode = 'client'
+                    logger.info("Starting in client mode (reconnected to last-known WiFi)")
+                else:
+                    logger.warning("Boot WiFi reconnect failed, starting AP mode")
+                    current_mode = 'client'  # Start in client mode so switch_to_ap_mode works
+                    if switch_to_ap_mode():
+                        logger.info("Successfully entered AP mode after boot reconnect failure")
+                    else:
+                        logger.error("Failed to enter AP mode; continuing in client mode and retrying normally")
+                        disconnect_start_time = time.time()
+                        current_mode = 'client'
+            else:
+                logger.info("WiFi not connected at startup (no last-known WiFi saved)")
+                disconnect_start_time = time.time()
+                current_mode = 'client'
     
     while running:
         try:
             if current_mode == 'client':
                 # Client mode: monitor WiFi connection
                 if is_wifi_connected():
+                    # Ensure force-AP is one-shot: clear any lingering flag when WiFi is healthy.
+                    clear_force_ap_flag()
                     # WiFi is connected, reset disconnect timer
                     if disconnect_start_time is not None:
                         logger.info("WiFi connection restored")
@@ -643,6 +800,7 @@ def main():
                         time.sleep(10)
                         if is_wifi_connected():
                             logger.info("Successfully reconnected to WiFi")
+                            clear_force_ap_flag()
                         else:
                             logger.warning("Switched to client mode but not connected yet")
                     else:

@@ -83,7 +83,10 @@ DEFAULT_CONFIG = {
     "ap_fallback_enabled": True,
     "ap_ssid": "OVBuddy",
     "ap_password": "password",
-    "display_ap_password": True
+    "display_ap_password": True,
+    # Last-known WiFi (used by wifi-monitor on boot to attempt reconnect before AP fallback)
+    "last_wifi_ssid": "",
+    "last_wifi_password": ""
 }
 
 # Configuration variables (will be loaded from config.json)
@@ -103,6 +106,8 @@ AP_FALLBACK_ENABLED = DEFAULT_CONFIG["ap_fallback_enabled"]
 AP_SSID = DEFAULT_CONFIG["ap_ssid"]
 AP_PASSWORD = DEFAULT_CONFIG["ap_password"]
 DISPLAY_AP_PASSWORD = DEFAULT_CONFIG["display_ap_password"]
+LAST_WIFI_SSID = DEFAULT_CONFIG["last_wifi_ssid"]
+LAST_WIFI_PASSWORD = DEFAULT_CONFIG["last_wifi_password"]
 
 # Display constants (not configurable via web)
 DISPLAY_WIDTH = 250
@@ -117,6 +122,7 @@ def load_config():
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
     global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
+    global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
     global CONFIG_LAST_MODIFIED
     
     with CONFIG_LOCK:
@@ -155,6 +161,8 @@ def load_config():
             AP_SSID = str(config.get("ap_ssid", DEFAULT_CONFIG["ap_ssid"]))
             AP_PASSWORD = str(config.get("ap_password", DEFAULT_CONFIG["ap_password"]))
             DISPLAY_AP_PASSWORD = bool(config.get("display_ap_password", DEFAULT_CONFIG["display_ap_password"]))
+            LAST_WIFI_SSID = str(config.get("last_wifi_ssid", DEFAULT_CONFIG["last_wifi_ssid"]))
+            LAST_WIFI_PASSWORD = str(config.get("last_wifi_password", DEFAULT_CONFIG["last_wifi_password"]))
             
             print(f"Configuration loaded from {CONFIG_FILE}")
         except json.JSONDecodeError as e:
@@ -183,7 +191,9 @@ def save_config():
             "ap_ssid": AP_SSID,
             "ap_password": AP_PASSWORD,
             "display_ap_password": DISPLAY_AP_PASSWORD,
-            "auto_update": AUTO_UPDATE
+            "auto_update": AUTO_UPDATE,
+            "last_wifi_ssid": LAST_WIFI_SSID,
+            "last_wifi_password": LAST_WIFI_PASSWORD
         }
         
         try:
@@ -219,7 +229,9 @@ def get_config_dict():
             "ap_fallback_enabled": AP_FALLBACK_ENABLED,
             "ap_ssid": AP_SSID,
             "ap_password": AP_PASSWORD,
-            "display_ap_password": DISPLAY_AP_PASSWORD
+            "display_ap_password": DISPLAY_AP_PASSWORD,
+            "last_wifi_ssid": LAST_WIFI_SSID,
+            "last_wifi_password": LAST_WIFI_PASSWORD
         }
 
 def update_config(new_config):
@@ -228,6 +240,7 @@ def update_config(new_config):
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
     global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
+    global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
     
     with CONFIG_LOCK:
         if "stations" in new_config:
@@ -262,6 +275,10 @@ def update_config(new_config):
             AP_PASSWORD = str(new_config["ap_password"])
         if "display_ap_password" in new_config:
             DISPLAY_AP_PASSWORD = bool(new_config["display_ap_password"])
+        if "last_wifi_ssid" in new_config:
+            LAST_WIFI_SSID = str(new_config["last_wifi_ssid"])
+        if "last_wifi_password" in new_config:
+            LAST_WIFI_PASSWORD = str(new_config["last_wifi_password"])
     
     return save_config()
 
@@ -938,6 +955,85 @@ def get_local_ip():
     except Exception:
         return '127.0.0.1'
 
+def _read_first_ipv4_for_interface(interface_name: str):
+    """Best-effort: return first IPv4 address for interface (no sudo)."""
+    try:
+        result = subprocess.run(
+            ['ip', '-4', 'addr', 'show', interface_name],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode != 0:
+            return ""
+        # Example: "inet 192.168.4.1/24 brd ..."
+        m = re.search(r'\binet\s+(\d{1,3}(?:\.\d{1,3}){3})/', result.stdout)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+def is_access_point_mode_active():
+    """Detect if the device is currently operating as an access point.
+
+    We keep this intentionally lightweight/robust:
+    - If we're clearly connected to normal WiFi (SSID present, non-AP subnet IP), we're NOT in AP mode.
+    - If wlan0 has the typical AP subnet IP, we're in AP mode.
+    - If a hostapd process is running, we're in AP mode.
+    - If a force-AP flag exists (used by wifi-monitor), treat as AP unless WiFi is connected.
+    """
+    # If we have a normal WiFi connection, prefer that over any stray AP signals.
+    try:
+        wifi_status = get_wifi_status()
+        if wifi_status.get("connected") and wifi_status.get("ssid"):
+            ip = (wifi_status.get("ip") or "").strip()
+            # If wlan0 has the AP subnet IP, that's still AP mode.
+            if ip and not ip.startswith("192.168.4."):
+                return False
+    except Exception:
+        # If WiFi status can't be read, continue with AP heuristics.
+        pass
+
+    try:
+        # Used by wifi-monitor.py to force AP mode on boot
+        if os.path.exists("/var/lib/ovbuddy-force-ap"):
+            return True
+    except Exception:
+        pass
+
+    # Fallback heuristic: typical AP IP on wlan0
+    wlan0_ip = _read_first_ipv4_for_interface('wlan0')
+    if wlan0_ip.startswith("192.168.4."):
+        return True
+
+    # wifi-monitor starts hostapd/dnsmasq as direct processes (not systemd services),
+    # so check for the process name.
+    try:
+        result = subprocess.run(
+            ['pgrep', '-x', 'hostapd'],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return True
+    except Exception:
+        pass
+
+    return False
+
+def get_access_point_ui_info():
+    """AP SSID/password info as configured via config.json (for display only)."""
+    ssid = AP_SSID or "OVBuddy"
+    password = AP_PASSWORD if AP_PASSWORD else ""
+    display_password = bool(DISPLAY_AP_PASSWORD)
+    return {
+        "ssid": ssid,
+        "password": password,
+        "display_password": display_password,
+        # Typical AP address; if the user customized it, we still try to show wlan0 IP.
+        "ip": _read_first_ipv4_for_interface('wlan0') or "192.168.4.1"
+    }
+
 def render_qr_code(epd=None, test_mode=False):
     """Render QR code with web server URL and instructions"""
     if not QRCODE_AVAILABLE:
@@ -948,12 +1044,23 @@ def render_qr_code(epd=None, test_mode=False):
     if not test_mode and epd is None:
         return  # Can't render without display
     
-    # Use Bonjour hostname for QR code (more user-friendly and may bypass HTTPS-only restrictions)
-    # The service is registered as "ovbuddy.local" regardless of actual hostname
-    url = "http://ovbuddy.local:8080"
+    ap_active = is_access_point_mode_active()
+    ap_info = get_access_point_ui_info() if ap_active else None
+
+    # Use AP IP when in AP mode; otherwise use Bonjour hostname.
+    # (In AP mode, mDNS can be unreliable/unsupported on some clients.)
+    url = f"http://{ap_info['ip']}:8080" if ap_active else "http://ovbuddy.local:8080"
     
     if test_mode:
         print(f"\nQR Code URL: {url}")
+        if ap_active:
+            print("[Access Point Mode]")
+            print(f"SSID: {ap_info['ssid']}")
+            if ap_info["password"]:
+                if ap_info["display_password"]:
+                    print(f"Password: {ap_info['password']}")
+                else:
+                    print("Password: ********")
         print("Instructions: Scan QR code to access web interface")
         print("(QR code would be displayed on the right, instructions on the left)")
         return
@@ -1010,19 +1117,23 @@ def render_qr_code(epd=None, test_mode=False):
         try:
             font = ImageFont.load_default()
             
-            # Get WiFi status
-            wifi_status = get_wifi_status()
+            # Get WiFi status (or AP info)
             ssid = ""
             ip = get_local_ip()
-            
-            if wifi_status.get("connected") and wifi_status.get("ssid"):
-                ssid = safe_ascii(wifi_status["ssid"])
-                # Truncate SSID if too long
-                if len(ssid) > 20:
-                    ssid = ssid[:17] + "..."
-                # Use IP from WiFi status if available, otherwise fallback to get_local_ip()
-                if wifi_status.get("ip"):
-                    ip = wifi_status["ip"]
+
+            if ap_active and ap_info:
+                ssid = safe_ascii(ap_info["ssid"])
+                ip = ap_info["ip"] or "192.168.4.1"
+            else:
+                wifi_status = get_wifi_status()
+                if wifi_status.get("connected") and wifi_status.get("ssid"):
+                    ssid = safe_ascii(wifi_status["ssid"])
+                    # Truncate SSID if too long
+                    if len(ssid) > 20:
+                        ssid = ssid[:17] + "..."
+                    # Use IP from WiFi status if available, otherwise fallback to get_local_ip()
+                    if wifi_status.get("ip"):
+                        ip = wifi_status["ip"]
             
             # Instruction text lines
             instructions = [
@@ -1050,7 +1161,7 @@ def render_qr_code(epd=None, test_mode=False):
             
             # Draw SSID
             if ssid:
-                ssid_text = f"WiFi: {ssid}"
+                ssid_text = f"{'AP' if ap_active else 'WiFi'}: {ssid}"
             else:
                 ssid_text = "WiFi: Not connected"
             
@@ -1069,6 +1180,22 @@ def render_qr_code(epd=None, test_mode=False):
             
             draw.text((x, info_y), ssid_text, font=font, fill=fg_color)
             
+            # Optional: show AP password on QR screen (only in AP mode)
+            if ap_active and ap_info and ap_info.get("password"):
+                pwd_value = ap_info["password"] if ap_info.get("display_password") else "********"
+                pwd_text = f"PWD: {safe_ascii(pwd_value)}"
+                # Truncate if too long for the text area
+                try:
+                    bbox = draw.textbbox((0, 0), pwd_text, font=font)
+                    pwd_width = bbox[2] - bbox[0]
+                except Exception:
+                    pwd_width = len(pwd_text) * 6
+                if pwd_width > text_area_width - 10:
+                    max_chars = (text_area_width - 10) // 6
+                    if max_chars > 3 and len(pwd_text) > max_chars:
+                        pwd_text = pwd_text[:max_chars-3] + "..."
+                draw.text((x, info_y + line_height), pwd_text, font=font, fill=fg_color)
+
             # Draw IP address (with empty line between SSID and IP)
             # Measure "WiFi:" label width to align IP value with SSID value
             try:
@@ -1077,7 +1204,8 @@ def render_qr_code(epd=None, test_mode=False):
             except:
                 wifi_label_width = len("WiFi: ") * 6
             
-            ip_y = info_y + line_height * 2  # Skip one line after SSID for spacing
+            # If we printed password, push IP down one more line.
+            ip_y = info_y + line_height * (3 if (ap_active and ap_info and ap_info.get("password")) else 2)
             
             # Draw IP label and value, aligning value with SSID value
             ip_label = "IP:"
@@ -2098,6 +2226,14 @@ def connect_to_wifi(ssid, password=None):
                                           capture_output=True, text=True, timeout=30)
                 
                 if result.returncode == 0:
+                    # Persist last-known WiFi so wifi-monitor can try it on next boot
+                    try:
+                        global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
+                        LAST_WIFI_SSID = str(ssid)
+                        LAST_WIFI_PASSWORD = str(password or "")
+                        save_config()
+                    except Exception as e:
+                        print(f"Warning: could not save last WiFi details: {e}")
                     return {"success": True, "message": f"Successfully connected to {ssid}"}
                 else:
                     error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
@@ -2895,6 +3031,8 @@ def main(test_mode_arg=False, disable_web=False):
     update_count = 0
     last_was_successful = False  # Track if last fetch was successful (no error)
     is_first_refresh = True  # Track if this is the very first refresh attempt
+    last_ap_active = None  # Track AP state transitions for cleaner logs
+    last_ap_screen_key = None  # Avoid re-rendering AP QR screen unnecessarily
     try:
         while True:
             # Check for update trigger (from web interface)
@@ -2994,6 +3132,34 @@ def main(test_mode_arg=False, disable_web=False):
             
             # Periodically check for config file changes
             load_config()  # This will only reload if file was modified
+
+            # If we're in Access Point mode, keep the QR/AP screen pinned and
+            # skip the departure board / API fetches until AP mode ends.
+            ap_active_now = is_access_point_mode_active()
+            if ap_active_now:
+                if last_ap_active is not True:
+                    print("\n[Access Point mode detected] Pinning QR screen (SSID/password) until WiFi is configured.")
+                last_ap_active = True
+                # Only re-render if AP UI info changes (SSID/password visibility/IP).
+                ap_info = get_access_point_ui_info()
+                pwd_display = ap_info["password"] if ap_info.get("display_password") else ("********" if ap_info.get("password") else "")
+                ap_screen_key = (ap_info.get("ssid", ""), pwd_display, bool(ap_info.get("display_password")), ap_info.get("ip", ""))
+
+                if last_ap_screen_key != ap_screen_key:
+                    try:
+                        render_qr_code(epd, test_mode=test_mode_arg)
+                    except Exception as e:
+                        print(f"Error displaying AP QR screen: {e}")
+                    last_ap_screen_key = ap_screen_key
+
+                # Poll AP mode periodically; avoid e-ink flashing by not re-rendering.
+                time.sleep(5)
+                continue
+            else:
+                if last_ap_active is True:
+                    print("\n[Access Point mode exited] Resuming normal departure display.")
+                last_ap_active = False
+                last_ap_screen_key = None
             
             # If refresh triggered or normal interval, update
             if refresh_triggered:
