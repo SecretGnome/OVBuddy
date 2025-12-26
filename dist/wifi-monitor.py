@@ -46,6 +46,7 @@ current_mode = None  # 'client' or 'ap'
 disconnect_start_time = None
 running = True
 wifi_manager = None  # 'networkmanager' or 'wpa_supplicant'
+ovbuddy_was_active_before_ap = False  # track to avoid display conflicts in AP mode
 
 
 def signal_handler(signum, frame):
@@ -302,7 +303,7 @@ def is_configured_wifi_available():
 
 def switch_to_ap_mode():
     """Switch to Access Point mode"""
-    global current_mode, wifi_manager
+    global current_mode, wifi_manager, ovbuddy_was_active_before_ap
     
     logger.info("Switching to Access Point mode...")
     
@@ -412,6 +413,23 @@ address=/ovbuddy.local/192.168.4.1
         
         # Display AP information on e-ink screen
         try:
+            # Stop the main display service to avoid two processes driving the e-ink at once.
+            # (ovbuddy.service writes to the same SPI/GPIO/display.)
+            ovbuddy_was_active_before_ap = False
+            try:
+                status = subprocess.run(
+                    ['systemctl', 'is-active', 'ovbuddy'],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                if status.returncode == 0 and status.stdout.strip() == 'active':
+                    ovbuddy_was_active_before_ap = True
+                    logger.info("Stopping ovbuddy service to show AP info on the display...")
+                    subprocess.run(['systemctl', 'stop', 'ovbuddy'], timeout=10)
+            except Exception as e:
+                logger.warning(f"Could not stop ovbuddy service before displaying AP info: {e}")
+
             logger.info("Displaying AP information on e-ink screen...")
             script_dir = os.path.dirname(os.path.abspath(__file__))
             display_script = os.path.join(script_dir, 'display_ap_info.py')
@@ -445,7 +463,7 @@ address=/ovbuddy.local/192.168.4.1
 
 def switch_to_client_mode():
     """Switch back to WiFi client mode"""
-    global current_mode, disconnect_start_time, wifi_manager
+    global current_mode, disconnect_start_time, wifi_manager, ovbuddy_was_active_before_ap
     
     logger.info("Switching to WiFi client mode...")
     
@@ -514,6 +532,16 @@ def switch_to_client_mode():
         current_mode = 'client'
         disconnect_start_time = None
         logger.info("Client mode restored")
+
+        # If we stopped ovbuddy to show AP info, bring it back once client mode is restored.
+        if ovbuddy_was_active_before_ap:
+            try:
+                logger.info("Restarting ovbuddy service after leaving AP mode...")
+                subprocess.run(['systemctl', 'start', 'ovbuddy'], timeout=10)
+            except Exception as e:
+                logger.warning(f"Could not restart ovbuddy service after AP mode: {e}")
+            finally:
+                ovbuddy_was_active_before_ap = False
         
         return True
         

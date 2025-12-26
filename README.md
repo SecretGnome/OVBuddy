@@ -31,6 +31,7 @@ OVBuddy is a Swiss public transport departure display for Raspberry Pi with e-in
 
 Use **Raspberry Pi Imager** (GUI). Full step-by-step instructions:
 - `doc/SD_CARD_SETUP.md`
+- Boot/startup timing notes: `doc/BOOT_TIME.md`
 
 **Quick version:**
 1. Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/)

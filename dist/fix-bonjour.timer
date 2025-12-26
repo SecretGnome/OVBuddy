@@ -1,6 +1,6 @@
 [Unit]
 Description=Timer to fix Bonjour/mDNS after boot
-After=network-online.target avahi-daemon.service
+After=network.target avahi-daemon.service
 
 [Timer]
 # Run 30 seconds after boot to ensure everything is up
