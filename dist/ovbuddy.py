@@ -2202,6 +2202,16 @@ def control_service(service_name, action):
 def connect_to_wifi(ssid, password=None):
     """Connect to a WiFi network using wpa_supplicant or nmcli"""
     try:
+        # Persist last-known WiFi immediately (so it survives reboot even if the
+        # connection is still in progress / DHCP hasn't completed yet).
+        try:
+            global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
+            LAST_WIFI_SSID = str(ssid)
+            LAST_WIFI_PASSWORD = str(password or "")
+            save_config()
+        except Exception as e:
+            print(f"Warning: could not save last WiFi details: {e}")
+
         # Check if we need sudo
         import os
         if os.geteuid() != 0:
@@ -2226,14 +2236,6 @@ def connect_to_wifi(ssid, password=None):
                                           capture_output=True, text=True, timeout=30)
                 
                 if result.returncode == 0:
-                    # Persist last-known WiFi so wifi-monitor can try it on next boot
-                    try:
-                        global LAST_WIFI_SSID, LAST_WIFI_PASSWORD
-                        LAST_WIFI_SSID = str(ssid)
-                        LAST_WIFI_PASSWORD = str(password or "")
-                        save_config()
-                    except Exception as e:
-                        print(f"Warning: could not save last WiFi details: {e}")
                     return {"success": True, "message": f"Successfully connected to {ssid}"}
                 else:
                     error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()

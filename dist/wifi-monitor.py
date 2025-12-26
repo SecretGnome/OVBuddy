@@ -48,6 +48,42 @@ disconnect_start_time = None
 running = True
 wifi_manager = None  # 'networkmanager' or 'wpa_supplicant'
 ovbuddy_was_active_before_ap = False  # track to avoid display conflicts in AP mode
+boot_connect_deadline = None  # if set, suppress AP fallback until this time
+boot_last_wifi = None  # {"ssid": "...", "password": "..."} for boot attempts
+
+def ensure_networkmanager_wifi_ready():
+    """Best-effort: ensure NM can manage wlan0 and autoconnect is enabled.
+
+    force-ap-mode.sh intentionally disables autoconnect and may set wlan0 unmanaged.
+    If the user has since configured WiFi again, we want normal behavior restored
+    so the device can reconnect on reboot.
+    """
+    try:
+        # Make sure NM is managing wlan0
+        subprocess.run(['sudo', 'nmcli', 'device', 'set', 'wlan0', 'managed', 'yes'], timeout=10, capture_output=True)
+        # Ensure WiFi radio is on
+        subprocess.run(['sudo', 'nmcli', 'radio', 'wifi', 'on'], timeout=10, capture_output=True)
+
+        # Re-enable autoconnect for all WiFi connections
+        result = subprocess.run(
+            ['sudo', 'nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split('\n'):
+                if ':802-11-wireless' in line:
+                    conn_name = line.split(':')[0]
+                    subprocess.run(
+                        ['sudo', 'nmcli', 'connection', 'modify', conn_name, 'connection.autoconnect', 'yes'],
+                        timeout=5,
+                        capture_output=True
+                    )
+        # Trigger NM to try connecting
+        subprocess.run(['sudo', 'nmcli', 'device', 'connect', 'wlan0'], timeout=10, capture_output=True)
+    except Exception as e:
+        logger.debug(f"ensure_networkmanager_wifi_ready failed: {e}")
 
 def clear_force_ap_flag():
     """Remove the FORCE_AP_FLAG if present.
@@ -167,18 +203,140 @@ def get_last_wifi_config():
     }
 
 
-def persist_last_wifi_ssid(ssid):
-    """Persist the last connected SSID without overwriting saved password."""
+def _extract_wpa_supplicant_psk(ssid):
+    """Best-effort: extract PSK for SSID from wpa_supplicant config (returns '' for open or not found)."""
+    candidates = [
+        "/etc/wpa_supplicant/wpa_supplicant.conf",
+        "/etc/wpa_supplicant/wpa_supplicant-wlan0.conf",
+    ]
+    for path in candidates:
+        try:
+            if not os.path.exists(path):
+                continue
+            text = Path(path).read_text(errors="ignore")
+            in_net = False
+            cur_ssid = None
+            cur_psk = None
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("network={"):
+                    in_net = True
+                    cur_ssid = None
+                    cur_psk = None
+                    continue
+                if in_net and line.startswith("}"):
+                    if cur_ssid == ssid and cur_psk is not None:
+                        return cur_psk
+                    in_net = False
+                    cur_ssid = None
+                    cur_psk = None
+                    continue
+                if not in_net:
+                    continue
+                if line.startswith("ssid="):
+                    val = line.split("=", 1)[1].strip()
+                    if val.startswith('"') and val.endswith('"'):
+                        val = val[1:-1]
+                    cur_ssid = val
+                elif line.startswith("psk="):
+                    val = line.split("=", 1)[1].strip()
+                    if val.startswith('"') and val.endswith('"'):
+                        val = val[1:-1]
+                    cur_psk = val
+                elif line.startswith("key_mgmt=") and "NONE" in line:
+                    # Open network
+                    if cur_psk is None:
+                        cur_psk = ""
+            # no match in this file
+        except Exception:
+            continue
+    return ""
+
+
+def _extract_nm_psk_for_active_wifi(ssid):
+    """Best-effort: read PSK from NetworkManager for the active WiFi connection."""
+    try:
+        # Find active WiFi connection name
+        active = subprocess.run(
+            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if active.returncode != 0:
+            return ""
+        conn_name = None
+        for line in active.stdout.strip().splitlines():
+            if not line:
+                continue
+            name, typ = (line.split(":", 1) + [""])[:2]
+            if typ == "802-11-wireless":
+                conn_name = name
+                break
+        if not conn_name:
+            return ""
+
+        # Ensure it matches the SSID we're connected to (best-effort)
+        nm_ssid = subprocess.run(
+            ["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if nm_ssid.returncode == 0:
+            # Look for a line like: "yes:<ssid>"
+            for line in nm_ssid.stdout.strip().splitlines():
+                if line.startswith("yes:"):
+                    active_ssid = line.split(":", 1)[1]
+                    if active_ssid and active_ssid != ssid:
+                        return ""
+                    break
+
+        # Pull PSK (may be empty if not stored)
+        psk = subprocess.run(
+            ["nmcli", "-s", "-g", "802-11-wireless-security.psk", "connection", "show", conn_name],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if psk.returncode == 0:
+            return (psk.stdout or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def persist_last_wifi_credentials(ssid):
+    """Persist last connected SSID + password (best-effort) into config.json."""
     if not ssid:
         return
     try:
         config = load_config()
+        changed = False
+
         if str(config.get("last_wifi_ssid", "") or "") != ssid:
             config["last_wifi_ssid"] = ssid
+            changed = True
+
+        # Only fill password if we can determine it (and don't overwrite non-empty value with empty).
+        existing_pwd = str(config.get("last_wifi_password", "") or "")
+        pwd = ""
+        if wifi_manager == "networkmanager":
+            pwd = _extract_nm_psk_for_active_wifi(ssid)
+        if not pwd:
+            pwd = _extract_wpa_supplicant_psk(ssid)
+
+        if pwd and pwd != existing_pwd:
+            config["last_wifi_password"] = pwd
+            changed = True
+
+        if changed:
             save_config(config)
-            logger.info(f"Saved last WiFi SSID: {ssid}")
+            logger.info(f"Saved last WiFi: ssid='{ssid}'" + (" (password saved)" if pwd else ""))
     except Exception as e:
-        logger.warning(f"Could not persist last WiFi SSID: {e}")
+        logger.warning(f"Could not persist last WiFi credentials: {e}")
 
 
 def attempt_connect_to_last_wifi(ssid, password, timeout_seconds=BOOT_CONNECT_TIMEOUT):
@@ -195,12 +353,25 @@ def attempt_connect_to_last_wifi(ssid, password, timeout_seconds=BOOT_CONNECT_TI
 
     def _try_nmcli():
         try:
+            # Prefer connecting without providing a password, so NetworkManager can
+            # use its stored connection profile/secret if available.
             cmd = ['nmcli', 'device', 'wifi', 'connect', ssid]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                return True
+
+            # If that fails and we have a password, try again with it (passphrase).
+            # (If the saved value is a 64-hex PSK, nmcli won't accept it as a passphrase.)
             if password:
-                cmd += ['password', password]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                is_hex_psk = (len(password) == 64 and all(c in "0123456789abcdefABCDEF" for c in password))
+                if not is_hex_psk:
+                    cmd2 = ['nmcli', 'device', 'wifi', 'connect', ssid, 'password', password]
+                    result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=30)
+                    return result2.returncode == 0
+            return False
         except Exception as e:
             logger.debug(f"nmcli connect attempt failed: {e}")
+            return False
 
     def _try_wpa_cli():
         try:
@@ -229,7 +400,10 @@ def attempt_connect_to_last_wifi(ssid, password, timeout_seconds=BOOT_CONNECT_TI
                 subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'ssid', f"\"{ssid}\""],
                                capture_output=True, text=True, timeout=5)
                 if password:
-                    subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'psk', f"\"{password}\""],
+                    # wpa_cli accepts either a quoted passphrase OR a raw 64-hex PSK.
+                    is_hex_psk = (len(password) == 64 and all(c in "0123456789abcdefABCDEF" for c in password))
+                    psk_value = password if is_hex_psk else f"\"{password}\""
+                    subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'psk', psk_value],
                                    capture_output=True, text=True, timeout=5)
                 else:
                     subprocess.run(['sudo', 'wpa_cli', '-i', 'wlan0', 'set_network', network_id, 'key_mgmt', 'NONE'],
@@ -251,6 +425,7 @@ def attempt_connect_to_last_wifi(ssid, password, timeout_seconds=BOOT_CONNECT_TI
 
     # Kick off an initial connect attempt
     if wifi_manager == 'networkmanager':
+        ensure_networkmanager_wifi_ready()
         _try_nmcli()
     else:
         _try_wpa_cli()
@@ -259,7 +434,7 @@ def attempt_connect_to_last_wifi(ssid, password, timeout_seconds=BOOT_CONNECT_TI
     while time.time() - start < timeout_seconds:
         if is_wifi_connected():
             logger.info(f"Connected to WiFi '{ssid}'")
-            persist_last_wifi_ssid(ssid)
+            persist_last_wifi_credentials(ssid)
             clear_force_ap_flag()
             return True
         time.sleep(3)
@@ -302,8 +477,8 @@ def is_wifi_connected():
         
         ssid = result.stdout.strip()
         logger.debug(f"Connected to WiFi: {ssid}")
-        # Record last connected SSID (password may already be saved by the web UI)
-        persist_last_wifi_ssid(ssid)
+        # Record last connected SSID + password (best-effort)
+        persist_last_wifi_credentials(ssid)
         
         # Optional: Test internet connectivity
         try:
@@ -706,6 +881,9 @@ def main():
     # Detect WiFi manager
     wifi_manager = detect_wifi_manager()
     logger.info(f"WiFi manager detected: {wifi_manager}")
+    if wifi_manager == 'networkmanager':
+        # Restore sane defaults in case force-ap-mode.sh disabled them previously.
+        ensure_networkmanager_wifi_ready()
     
     # Check if force AP mode flag exists
     force_ap_requested = os.path.exists(FORCE_AP_FLAG)
@@ -733,26 +911,33 @@ def main():
                 disconnect_start_time = time.time()
                 current_mode = 'client'
     else:
-        # Determine initial mode normally, but first try last-known WiFi (if any)
+        # Determine initial mode normally, but on boot:
+        # - If last_wifi_ssid is known, give it up to BOOT_CONNECT_TIMEOUT seconds to reconnect
+        # - Only then fall back to AP mode
         if is_wifi_connected():
             current_mode = 'client'
             logger.info("Starting in client mode (WiFi connected)")
             clear_force_ap_flag()
         else:
-            last_wifi = get_last_wifi_config()
-            if last_wifi.get("ssid"):
-                if attempt_connect_to_last_wifi(last_wifi["ssid"], last_wifi.get("password", ""), BOOT_CONNECT_TIMEOUT):
-                    current_mode = 'client'
-                    logger.info("Starting in client mode (reconnected to last-known WiFi)")
-                else:
-                    logger.warning("Boot WiFi reconnect failed, starting AP mode")
-                    current_mode = 'client'  # Start in client mode so switch_to_ap_mode works
-                    if switch_to_ap_mode():
-                        logger.info("Successfully entered AP mode after boot reconnect failure")
-                    else:
-                        logger.error("Failed to enter AP mode; continuing in client mode and retrying normally")
-                        disconnect_start_time = time.time()
-                        current_mode = 'client'
+            boot_wifi = get_last_wifi_config()
+            if boot_wifi.get("ssid"):
+                global boot_connect_deadline, boot_last_wifi
+                boot_last_wifi = boot_wifi
+                boot_connect_deadline = time.time() + BOOT_CONNECT_TIMEOUT
+                pwd_present = bool(boot_wifi.get("password"))
+                logger.info(
+                    f"WiFi not connected at startup. Will try last-known WiFi '{boot_wifi['ssid']}' "
+                    f"for up to {BOOT_CONNECT_TIMEOUT}s before AP fallback."
+                )
+                logger.info(f"Last-known WiFi password present: {pwd_present}")
+                # Kick off a best-effort connect attempt (non-blocking for the rest of the logic)
+                try:
+                    attempt_connect_to_last_wifi(boot_wifi["ssid"], boot_wifi.get("password", ""), timeout_seconds=10)
+                except Exception as e:
+                    logger.debug(f"Initial boot connect kick failed: {e}")
+
+                disconnect_start_time = time.time()
+                current_mode = 'client'
             else:
                 logger.info("WiFi not connected at startup (no last-known WiFi saved)")
                 disconnect_start_time = time.time()
@@ -765,6 +950,11 @@ def main():
                 if is_wifi_connected():
                     # Ensure force-AP is one-shot: clear any lingering flag when WiFi is healthy.
                     clear_force_ap_flag()
+                    # If we were in boot reconnect grace period, clear it.
+                    if boot_connect_deadline is not None:
+                        logger.info("Boot reconnect succeeded; clearing boot reconnect grace period")
+                        boot_connect_deadline = None
+                        boot_last_wifi = None
                     # WiFi is connected, reset disconnect timer
                     if disconnect_start_time is not None:
                         logger.info("WiFi connection restored")
@@ -779,6 +969,37 @@ def main():
                         disconnect_duration = time.time() - disconnect_start_time
                         logger.info(f"WiFi disconnected for {int(disconnect_duration)}s")
                         
+                        # Boot reconnect grace: don't enter AP until deadline passes
+                        if boot_connect_deadline is not None:
+                            remaining = int(max(0, boot_connect_deadline - time.time()))
+                            if remaining > 0:
+                                logger.info(f"Boot reconnect grace active: {remaining}s remaining before AP fallback")
+                                if wifi_manager == 'networkmanager':
+                                    ensure_networkmanager_wifi_ready()
+                                # Periodically re-kick connection attempt during boot grace
+                                if boot_last_wifi and (int(disconnect_duration) % 15 == 0):
+                                    try:
+                                        attempt_connect_to_last_wifi(
+                                            boot_last_wifi.get("ssid", ""),
+                                            boot_last_wifi.get("password", ""),
+                                            timeout_seconds=10
+                                        )
+                                    except Exception:
+                                        pass
+                                time.sleep(CHECK_INTERVAL)
+                                continue
+                            else:
+                                logger.warning("Boot reconnect grace expired; entering AP mode")
+                                boot_connect_deadline = None
+                                boot_last_wifi = None
+                                if switch_to_ap_mode():
+                                    disconnect_start_time = None
+                                else:
+                                    logger.error("Failed to switch to AP mode after boot grace expiry, will retry")
+                                    time.sleep(30)
+                                time.sleep(CHECK_INTERVAL)
+                                continue
+
                         if disconnect_duration >= DISCONNECT_THRESHOLD:
                             logger.warning(f"WiFi disconnected for {int(disconnect_duration)}s, switching to AP mode")
                             if switch_to_ap_mode():
