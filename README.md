@@ -116,6 +116,23 @@ Access the **hacker-style terminal web interface** at:
 
 Or scan the QR code displayed on the e-ink screen during startup.
 
+#### Web Login (Basic Auth)
+
+The web interface is protected with **HTTP Basic Authentication** and is configured via a plain text file on the **SD card boot partition root**:
+
+- `ovbuddy-web-auth.txt` (in `/boot/firmware` or `/boot` depending on OS image)
+
+Format:
+
+```text
+USERNAME=admin
+PASSWORD=change_me
+```
+
+- **First run**: if the file is missing/empty, OVBuddy generates a random password (user `admin`), writes the file, prints it in logs, and tries to show it briefly on the e-ink display.
+- **Changing credentials**: once logged in, use the **“web auth (Basic)”** section in the web UI to update or rotate credentials (it rewrites the file).
+- **Permissions**: rotating/updating this file from the web UI requires **passwordless sudo** (the deploy script configures this automatically). If you skipped deploy, run `./scripts/setup-passwordless-sudo.sh`.
+
 **New Features:**
 - 🎨 Terminal/hacker theme with CRT effects
 - 📝 Template-based architecture for easy customization

@@ -29,6 +29,48 @@
             <button id="restartServiceButton" class="snackbar-button" onclick="restartServiceFromSnackbar()">Restart Service</button>
         </div>
 
+        <!-- Web Authentication Section -->
+        <div class="terminal-window">
+            <div class="terminal-window-header">
+                <h2 class="terminal-window-title">web auth (Basic)</h2>
+                <div class="terminal-window-controls">
+                    <span class="terminal-control close"></span>
+                    <span class="terminal-control minimize"></span>
+                    <span class="terminal-control maximize"></span>
+                </div>
+            </div>
+            <div class="terminal-window-body">
+                <div class="help-text" style="margin-bottom: 10px;">
+                    <strong>Status:</strong> <span id="webAuthStatusText">Loading...</span>
+                </div>
+                <form id="webAuthForm">
+                    <div class="two-column-grid">
+                        <div class="form-group">
+                            <label for="webAuthUsername">Username</label>
+                            <input type="text" id="webAuthUsername" name="webAuthUsername" autocomplete="username">
+                            <div class="help-text">Active username for the web interface</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="webAuthPassword">New Password</label>
+                            <input type="password" id="webAuthPassword" name="webAuthPassword" autocomplete="new-password" placeholder="(leave empty to keep unchanged)">
+                            <div class="help-text">Min 8 characters</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="webAuthPasswordConfirm">Confirm Password</label>
+                            <input type="password" id="webAuthPasswordConfirm" name="webAuthPasswordConfirm" autocomplete="new-password">
+                        </div>
+                        <div class="form-group">
+                            <button type="submit">Update Web Login</button>
+                            <button type="button" class="secondary" onclick="rotateWebAuth()">Rotate (Generate New Password)</button>
+                        </div>
+                    </div>
+                </form>
+                <div class="help-text" style="margin-top: 10px;">
+                    After updating, your browser may prompt again for credentials on refresh.
+                </div>
+            </div>
+        </div>
+
         <!-- Configuration Section (2-column form) -->
         <div class="terminal-window">
             <div class="terminal-window-header">

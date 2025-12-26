@@ -76,6 +76,109 @@ function loadConfiguration() {
         });
 }
 
+// Web Authentication Management (Basic Auth)
+function loadWebAuthStatus() {
+    fetch('/api/web-auth')
+        .then(r => r.json())
+        .then(data => {
+            const statusEl = document.getElementById('webAuthStatusText');
+            const userEl = document.getElementById('webAuthUsername');
+            if (statusEl) {
+                const source = data.source ? data.source.toUpperCase() : 'UNKNOWN';
+                const enabled = data.enabled ? 'ENABLED [OK]' : 'DISABLED [WARN]';
+                const path = data.path ? ` | FILE: ${data.path}` : '';
+                statusEl.textContent = `${enabled} | SOURCE: ${source}${path}`;
+            }
+            if (userEl) {
+                userEl.value = data.username || '';
+            }
+        })
+        .catch(err => {
+            console.error('Error loading web auth status:', err);
+            const statusEl = document.getElementById('webAuthStatusText');
+            if (statusEl) statusEl.textContent = 'Error loading status [FAIL]';
+        });
+}
+
+function saveWebAuth(event) {
+    event.preventDefault();
+    const username = (document.getElementById('webAuthUsername')?.value || '').trim();
+    const pw = document.getElementById('webAuthPassword')?.value || '';
+    const pw2 = document.getElementById('webAuthPasswordConfirm')?.value || '';
+
+    if (!username) {
+        showMessage('Web auth username is required', 'error');
+        return;
+    }
+    if (!pw) {
+        showMessage('Password is required (stored in SD card auth file)', 'error');
+        return;
+    }
+    if (pw.length < 8) {
+        showMessage('Password must be at least 8 characters', 'error');
+        return;
+    }
+    if (pw !== pw2) {
+        showMessage('Password confirmation does not match', 'error');
+        return;
+    }
+
+    fetch('/api/web-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password: pw })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showMessage(data.message || 'Web auth updated [OK]', 'success');
+            // Clear password fields after update
+            const p1 = document.getElementById('webAuthPassword');
+            const p2 = document.getElementById('webAuthPasswordConfirm');
+            if (p1) p1.value = '';
+            if (p2) p2.value = '';
+            loadWebAuthStatus();
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to update web auth'), 'error');
+        }
+    })
+    .catch(err => {
+        console.error('Error updating web auth:', err);
+        showMessage('Error updating web auth', 'error');
+    });
+}
+
+function rotateWebAuth() {
+    if (!confirm('Rotate web login (generate a new random password)? You will need to re-login.')) return;
+
+    const username = (document.getElementById('webAuthUsername')?.value || '').trim();
+
+    fetch('/api/web-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(username ? { reset: true, username } : { reset: true })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            const u = data.username || username || 'admin';
+            const pw = data.generated_password || '';
+            if (pw) {
+                showMessage(`Rotated web login. New credentials: ${u} / ${pw}`, 'success');
+            } else {
+                showMessage(data.message || 'Rotated web login [OK]', 'success');
+            }
+            loadWebAuthStatus();
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to rotate'), 'error');
+        }
+    })
+    .catch(err => {
+        console.error('Error rotating web auth:', err);
+        showMessage('Error rotating web auth', 'error');
+    });
+}
+
 function saveConfiguration(event) {
     event.preventDefault();
     console.log('Saving configuration...');
@@ -870,6 +973,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Load initial data
     loadConfiguration();
+    loadWebAuthStatus();
     refreshWifiStatus();
     refreshServicesStatus();
     loadVersionInfo();
@@ -881,6 +985,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const configForm = document.getElementById('configForm');
     if (configForm) {
         configForm.addEventListener('submit', saveConfiguration);
+    }
+
+    const webAuthForm = document.getElementById('webAuthForm');
+    if (webAuthForm) {
+        webAuthForm.addEventListener('submit', saveWebAuth);
     }
     
     // Add terminal typing effect to title (only for terminal theme)

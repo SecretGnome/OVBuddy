@@ -117,6 +117,10 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl is-enabled ovbuddy-wifi
 # Allow force AP mode script (runs as root, needs full access)
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/bash /home/pi/ovbuddy/force-ap-mode.sh
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash /home/pi/ovbuddy/force-ap-mode.sh
+
+# Allow copying files (needed by service install flows and for writing /boot*/ovbuddy-web-auth.txt)
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/cp
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp
 "
 
 # Upload and install sudoers configuration

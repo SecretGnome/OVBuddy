@@ -149,6 +149,7 @@ if [ "$SKIP_DEPLOY" == true ]; then
     echo -e "${YELLOW}Connecting to ${PI_USER}@${PI_SSH_HOST}...${NC}"
     # Still ensure remote directory exists (needed for zeroconf package copy)
     sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "mkdir -p ${REMOTE_DIR}" > /dev/null 2>&1
+
     echo ""
 else
     echo -e "${YELLOW}Deploying ovbuddy to ${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}${NC}"
@@ -591,6 +592,7 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/bash /home/${PI_USER}/ovbuddy/install-se
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash /home/${PI_USER}/ovbuddy/install-service.sh
 
 # Allow copying files to system directories (needed for service installation)
+# and writing the SD-card-root web auth file (/boot*/ovbuddy-web-auth.txt)
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/cp
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp
 
@@ -657,13 +659,13 @@ if [ "$PASSWORDLESS_SUDO" != "true" ]; then
     install_or_refresh_sudoers
 else
     echo -e "${GREEN}  ✓ Passwordless sudo is enabled${NC}"
-    # Even if passwordless sudo is enabled, ensure required rules exist (reboot + install-service.sh).
-    NEED_RULES=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n grep -q '/bin/systemctl reboot' /etc/sudoers.d/ovbuddy 2>/dev/null && sudo -n grep -q 'install-service\\.sh' /etc/sudoers.d/ovbuddy 2>/dev/null && echo 'false' || echo 'true'" 2>/dev/null || echo 'true')
+    # Even if passwordless sudo is enabled, ensure required rules exist (reboot + install-service.sh + cp for /boot*/ovbuddy-web-auth.txt).
+    NEED_RULES=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n grep -q '/bin/systemctl reboot' /etc/sudoers.d/ovbuddy 2>/dev/null && sudo -n grep -q 'install-service\\.sh' /etc/sudoers.d/ovbuddy 2>/dev/null && sudo -n grep -q '/bin/cp' /etc/sudoers.d/ovbuddy 2>/dev/null && echo 'false' || echo 'true'" 2>/dev/null || echo 'true')
     if [ "$NEED_RULES" = "true" ]; then
-        echo -e "${YELLOW}  Updating sudoers to include reboot/update rules...${NC}"
+        echo -e "${YELLOW}  Updating sudoers to include reboot/update/cp rules...${NC}"
         install_or_refresh_sudoers
     else
-        echo -e "${GREEN}  ✓ Sudoers rules already include reboot/update permissions${NC}"
+        echo -e "${GREEN}  ✓ Sudoers rules already include reboot/update/cp permissions${NC}"
     fi
 fi
 
