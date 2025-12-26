@@ -43,6 +43,18 @@ body {
     padding: 20px;
 }
 
+/* Dashboard layout */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.dashboard-grid .terminal-window {
+    margin-bottom: 0;
+}
+
 /* Terminal Header */
 .terminal-header {
     border: 2px solid var(--border-color);
@@ -136,12 +148,12 @@ body {
 .terminal-control.maximize { background-color: var(--success-color); }
 
 .terminal-window-body {
-    padding: 20px;
+    padding: 14px;
 }
 
 /* Form Elements */
 .form-group {
-    margin-bottom: 20px;
+    margin-bottom: 14px;
 }
 
 label {
@@ -163,7 +175,7 @@ input[type="password"],
 textarea,
 select {
     width: 100%;
-    padding: 10px;
+    padding: 8px 10px;
     background-color: var(--bg-primary);
     border: 1px solid var(--border-color);
     border-radius: 3px;
@@ -183,7 +195,7 @@ select:focus {
 }
 
 textarea {
-    min-height: 80px;
+    min-height: 70px;
     resize: vertical;
 }
 
@@ -223,7 +235,7 @@ button {
     background-color: transparent;
     color: var(--text-primary);
     border: 2px solid var(--border-color);
-    padding: 10px 20px;
+    padding: 8px 14px;
     border-radius: 3px;
     cursor: pointer;
     font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
@@ -232,8 +244,8 @@ button {
     text-transform: uppercase;
     transition: all 0.3s ease;
     box-shadow: var(--glow);
-    margin-right: 10px;
-    margin-bottom: 10px;
+    margin-right: 8px;
+    margin-bottom: 8px;
 }
 
 button:hover {
@@ -432,7 +444,7 @@ button.warning:hover {
 
 /* Network List */
 .network-list {
-    max-height: 400px;
+    max-height: 320px;
     overflow-y: auto;
     border: 1px solid var(--border-color);
     border-radius: 3px;
@@ -455,13 +467,16 @@ button.warning:hover {
 }
 
 .network-item {
-    padding: 12px;
-    margin: 8px 0;
+    padding: 10px;
+    margin: 6px 0;
     background-color: var(--bg-secondary);
     border: 1px solid var(--text-muted);
     border-radius: 3px;
     cursor: pointer;
     transition: all 0.3s ease;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
 }
 
 .network-item:hover {
@@ -487,13 +502,42 @@ button.warning:hover {
     color: var(--text-muted);
 }
 
+.network-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.network-auth {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.network-password {
+    width: 220px;
+    max-width: 100%;
+}
+
+.network-open-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.network-connect {
+    padding: 8px 12px;
+    font-size: 12px;
+    margin: 0;
+}
+
 /* Service Status */
 .service-status {
     display: flex;
     align-items: center;
     gap: 15px;
     margin-bottom: 15px;
-    padding: 15px;
+    padding: 12px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--text-muted);
     border-radius: 3px;
@@ -562,6 +606,10 @@ button.warning:hover {
 @media (max-width: 768px) {
     .container {
         padding: 10px;
+    }
+
+    .dashboard-grid {
+        grid-template-columns: 1fr;
     }
     
     .terminal-title {

@@ -29,140 +29,143 @@
             <button id="restartServiceButton" class="snackbar-button" onclick="restartServiceFromSnackbar()">Restart Service</button>
         </div>
 
-        <!-- Configuration Section -->
-        <div class="terminal-window">
-            <div class="terminal-window-header">
-                <h2 class="terminal-window-title">config.json</h2>
-                <div class="terminal-window-controls">
-                    <span class="terminal-control close"></span>
-                    <span class="terminal-control minimize"></span>
-                    <span class="terminal-control maximize"></span>
+        <!-- Dashboard Row: Config + Services (two columns on wide screens) -->
+        <div class="dashboard-grid">
+            <!-- Configuration Section -->
+            <div class="terminal-window">
+                <div class="terminal-window-header">
+                    <h2 class="terminal-window-title">config.json</h2>
+                    <div class="terminal-window-controls">
+                        <span class="terminal-control close"></span>
+                        <span class="terminal-control minimize"></span>
+                        <span class="terminal-control maximize"></span>
+                    </div>
+                </div>
+                <div class="terminal-window-body">
+                    <form id="configForm">
+                        <div class="form-group">
+                            <label for="stations">Stations (one per line)</label>
+                            <textarea id="stations" name="stations" placeholder="Zürich Saalsporthalle&#10;Zürich, Saalsporthalle"></textarea>
+                            <div class="help-text">Enter station names, one per line</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="lines">Lines (comma-separated)</label>
+                            <input type="text" id="lines" name="lines" placeholder="S4, T13, T5">
+                            <div class="help-text">Enter line numbers separated by commas</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="refresh_interval">Refresh Interval (seconds)</label>
+                            <input type="number" id="refresh_interval" name="refresh_interval" min="1" step="1">
+                            <div class="help-text">How often to update the display</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="qr_code_display_duration">QR Code Display Duration (seconds)</label>
+                            <input type="number" id="qr_code_display_duration" name="qr_code_display_duration" min="0" step="1">
+                            <div class="help-text">How long to show QR code on startup (0 to skip)</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="destination_prefixes_to_remove">Destination Prefixes to Remove (one per line)</label>
+                            <textarea id="destination_prefixes_to_remove" name="destination_prefixes_to_remove" placeholder="Zurich &#10;Zurich, &#10;Zürich "></textarea>
+                            <div class="help-text">Prefixes to remove from destination names</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="destination_exceptions">Destination Exceptions (comma-separated)</label>
+                            <input type="text" id="destination_exceptions" name="destination_exceptions" placeholder="HB, Hbf">
+                            <div class="help-text">Destinations that should never have prefixes removed</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="max_departures">Max Departures</label>
+                            <input type="number" id="max_departures" name="max_departures" min="1" max="20" step="1">
+                            <div class="help-text">Maximum number of connections to display</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="inverted" name="inverted">
+                                Inverted Display (white text on black background)
+                            </label>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="flip_display" name="flip_display">
+                                Flip Display (rotate 180 degrees)
+                            </label>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="use_partial_refresh" name="use_partial_refresh">
+                                Use Partial Refresh (less flashing, may have ghosting)
+                            </label>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="auto_update" name="auto_update">
+                                Auto-update on startup (automatically install updates when available)
+                            </label>
+                            <div class="help-text">When enabled, the system will automatically update and restart when a new version is available</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="ap_fallback_enabled" name="ap_fallback_enabled">
+                                Enable WiFi Access Point Fallback
+                            </label>
+                            <div class="help-text">When enabled, the device will create its own WiFi network if it can't connect to a configured network</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="ap_ssid">Access Point Name (SSID)</label>
+                            <input type="text" id="ap_ssid" name="ap_ssid" placeholder="OVBuddy">
+                            <div class="help-text">The name of the WiFi network when in access point mode</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="ap_password">Access Point Password</label>
+                            <input type="password" id="ap_password" name="ap_password" placeholder="Leave empty for open network">
+                            <div class="help-text">Password for the access point (leave empty for no password)</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="display_ap_password" name="display_ap_password">
+                                Display password on screen when in AP mode
+                            </label>
+                            <div class="help-text">When enabled, the password will be shown on the e-ink display (useful for initial setup)</div>
+                        </div>
+                        
+                        <button type="submit">Save Configuration</button>
+                    </form>
                 </div>
             </div>
-            <div class="terminal-window-body">
-                <form id="configForm">
-                    <div class="form-group">
-                        <label for="stations">Stations (one per line)</label>
-                        <textarea id="stations" name="stations" placeholder="Zürich Saalsporthalle&#10;Zürich, Saalsporthalle"></textarea>
-                        <div class="help-text">Enter station names, one per line</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="lines">Lines (comma-separated)</label>
-                        <input type="text" id="lines" name="lines" placeholder="S4, T13, T5">
-                        <div class="help-text">Enter line numbers separated by commas</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="refresh_interval">Refresh Interval (seconds)</label>
-                        <input type="number" id="refresh_interval" name="refresh_interval" min="1" step="1">
-                        <div class="help-text">How often to update the display</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="qr_code_display_duration">QR Code Display Duration (seconds)</label>
-                        <input type="number" id="qr_code_display_duration" name="qr_code_display_duration" min="0" step="1">
-                        <div class="help-text">How long to show QR code on startup (0 to skip)</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="destination_prefixes_to_remove">Destination Prefixes to Remove (one per line)</label>
-                        <textarea id="destination_prefixes_to_remove" name="destination_prefixes_to_remove" placeholder="Zurich &#10;Zurich, &#10;Zürich "></textarea>
-                        <div class="help-text">Prefixes to remove from destination names</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="destination_exceptions">Destination Exceptions (comma-separated)</label>
-                        <input type="text" id="destination_exceptions" name="destination_exceptions" placeholder="HB, Hbf">
-                        <div class="help-text">Destinations that should never have prefixes removed</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="max_departures">Max Departures</label>
-                        <input type="number" id="max_departures" name="max_departures" min="1" max="20" step="1">
-                        <div class="help-text">Maximum number of connections to display</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="inverted" name="inverted">
-                            Inverted Display (white text on black background)
-                        </label>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="flip_display" name="flip_display">
-                            Flip Display (rotate 180 degrees)
-                        </label>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="use_partial_refresh" name="use_partial_refresh">
-                            Use Partial Refresh (less flashing, may have ghosting)
-                        </label>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="auto_update" name="auto_update">
-                            Auto-update on startup (automatically install updates when available)
-                        </label>
-                        <div class="help-text">When enabled, the system will automatically update and restart when a new version is available</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="ap_fallback_enabled" name="ap_fallback_enabled">
-                            Enable WiFi Access Point Fallback
-                        </label>
-                        <div class="help-text">When enabled, the device will create its own WiFi network if it can't connect to a configured network</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="ap_ssid">Access Point Name (SSID)</label>
-                        <input type="text" id="ap_ssid" name="ap_ssid" placeholder="OVBuddy">
-                        <div class="help-text">The name of the WiFi network when in access point mode</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="ap_password">Access Point Password</label>
-                        <input type="password" id="ap_password" name="ap_password" placeholder="Leave empty for open network">
-                        <div class="help-text">Password for the access point (leave empty for no password)</div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="display_ap_password" name="display_ap_password">
-                            Display password on screen when in AP mode
-                        </label>
-                        <div class="help-text">When enabled, the password will be shown on the e-ink display (useful for initial setup)</div>
-                    </div>
-                    
-                    <button type="submit">Save Configuration</button>
-                </form>
-            </div>
-        </div>
 
-        <!-- Service Management Section -->
-        <div class="terminal-window">
-            <div class="terminal-window-header">
-                <h2 class="terminal-window-title">systemctl status</h2>
-                <div class="terminal-window-controls">
-                    <span class="terminal-control close"></span>
-                    <span class="terminal-control minimize"></span>
-                    <span class="terminal-control maximize"></span>
-                </div>
-            </div>
-            <div class="terminal-window-body">
-                <div id="servicesSection">
-                    <div id="servicesStatus">
-                        <p style="text-align: center;">Loading service status...</p>
+            <!-- Service Management Section -->
+            <div class="terminal-window">
+                <div class="terminal-window-header">
+                    <h2 class="terminal-window-title">systemctl status</h2>
+                    <div class="terminal-window-controls">
+                        <span class="terminal-control close"></span>
+                        <span class="terminal-control minimize"></span>
+                        <span class="terminal-control maximize"></span>
                     </div>
-                    
-                    <div class="form-group">
-                        <button type="button" onclick="refreshServicesStatus()" class="secondary">Refresh Status</button>
+                </div>
+                <div class="terminal-window-body">
+                    <div id="servicesSection">
+                        <div id="servicesStatus">
+                            <p style="text-align: center;">Loading service status...</p>
+                        </div>
+                        
+                        <div class="form-group">
+                            <button type="button" onclick="refreshServicesStatus()" class="secondary">Refresh Status</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -195,15 +198,6 @@
                         <div class="form-group">
                             <label>Available Networks</label>
                             <div id="networkList" class="network-list"></div>
-                        </div>
-                        
-                        <div class="form-group" id="passwordGroup" style="display: none;">
-                            <label for="wifiPassword">Password (leave empty for open networks)</label>
-                            <input type="password" id="wifiPassword" name="wifiPassword" placeholder="Enter WiFi password">
-                        </div>
-                        
-                        <div class="form-group">
-                            <button type="button" id="connectButton" onclick="connectToNetwork()" disabled>Connect</button>
                         </div>
                     </div>
                 </div>

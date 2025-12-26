@@ -2,6 +2,7 @@
 
 // Global state
 let selectedNetwork = null;
+let selectedNetworkElement = null;
 
 // Utility Functions
 function showMessage(text, type = 'info') {
@@ -199,6 +200,9 @@ function scanNetworks() {
                     networkItem.className = 'network-item';
                     networkItem.onclick = () => selectNetwork(network, networkItem);
                     
+                    const main = document.createElement('div');
+                    main.className = 'network-main';
+
                     const ssid = document.createElement('div');
                     ssid.className = 'network-ssid';
                     ssid.textContent = '> ' + (network.ssid || 'Unknown');
@@ -210,9 +214,10 @@ function scanNetworks() {
                         infoText += ` | Signal: ${network.signal}%`;
                     }
                     info.textContent = infoText;
-                    
-                    networkItem.appendChild(ssid);
-                    networkItem.appendChild(info);
+
+                    main.appendChild(ssid);
+                    main.appendChild(info);
+                    networkItem.appendChild(main);
                     networkList.appendChild(networkItem);
                 });
             } else {
@@ -232,6 +237,7 @@ function scanNetworks() {
 function selectNetwork(network, element) {
     console.log('Network selected:', network);
     selectedNetwork = network;
+    selectedNetworkElement = element || null;
     
     // Update UI
     document.querySelectorAll('.network-item').forEach(item => {
@@ -240,48 +246,80 @@ function selectNetwork(network, element) {
     if (element) {
         element.classList.add('selected');
     }
-    
-    // Show password input if encrypted
-    const passwordGroup = document.getElementById('passwordGroup');
-    const passwordInput = document.getElementById('wifiPassword');
-    if (network.encrypted) {
-        console.log('Network is encrypted, showing password input');
-        passwordGroup.style.display = 'block';
-        passwordInput.required = true;
-    } else {
-        console.log('Network is open, hiding password input');
-        passwordGroup.style.display = 'none';
-        passwordInput.required = false;
-        passwordInput.value = '';
+
+    // Ensure only one inline auth row exists, and place it inside the selected item
+    document.querySelectorAll('.network-auth').forEach(row => row.remove());
+    if (element) {
+        element.appendChild(buildInlineAuthRow(network));
+        // Try to focus password immediately for encrypted networks
+        const pw = element.querySelector('input[type="password"]');
+        if (pw) {
+            pw.focus();
+        }
     }
-    
-    // Enable connect button
-    const connectButton = document.getElementById('connectButton');
-    connectButton.disabled = false;
-    console.log('Connect button enabled');
+}
+
+function buildInlineAuthRow(network) {
+    const auth = document.createElement('div');
+    auth.className = 'network-auth';
+
+    if (network.encrypted) {
+        const password = document.createElement('input');
+        password.type = 'password';
+        password.placeholder = 'WiFi password';
+        password.autocomplete = 'current-password';
+        password.className = 'network-password';
+        password.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                connectToNetwork();
+            }
+        });
+        auth.appendChild(password);
+    } else {
+        const hint = document.createElement('div');
+        hint.className = 'network-open-hint';
+        hint.textContent = 'Open network';
+        auth.appendChild(hint);
+    }
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'network-connect';
+    btn.textContent = 'Connect';
+    btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        connectToNetwork();
+    });
+    auth.appendChild(btn);
+
+    return auth;
 }
 
 function connectToNetwork() {
     console.log('Connecting to network...');
     
-    if (!selectedNetwork) {
+    if (!selectedNetwork || !selectedNetworkElement) {
         console.log('No network selected');
         showMessage('Please select a network first', 'error');
         return;
     }
-    
-    const passwordInput = document.getElementById('wifiPassword');
-    const password = selectedNetwork.encrypted ? passwordInput.value : '';
+
+    const connectButton = selectedNetworkElement.querySelector('.network-connect');
+    const passwordInput = selectedNetworkElement.querySelector('.network-password');
+    const password = selectedNetwork.encrypted ? (passwordInput?.value || '') : '';
     
     if (selectedNetwork.encrypted && !password) {
         console.log('Password required but not provided');
         showMessage('Password required for encrypted network', 'error');
         return;
     }
-    
-    const connectButton = document.getElementById('connectButton');
-    connectButton.disabled = true;
-    connectButton.textContent = 'Connecting...';
+
+    if (connectButton) {
+        connectButton.disabled = true;
+        connectButton.textContent = 'Connecting...';
+    }
     
     console.log('Sending connect request...');
     
@@ -301,8 +339,10 @@ function connectToNetwork() {
     })
     .then(data => {
         console.log('Response data:', data);
-        connectButton.disabled = false;
-        connectButton.textContent = 'Connect';
+        if (connectButton) {
+            connectButton.disabled = false;
+            connectButton.textContent = 'Connect';
+        }
         
         if (data.success) {
             showMessage(data.message || 'Connecting to network... [OK]', 'success');
@@ -316,8 +356,10 @@ function connectToNetwork() {
     })
     .catch(error => {
         console.error('Error connecting:', error);
-        connectButton.disabled = false;
-        connectButton.textContent = 'Connect';
+        if (connectButton) {
+            connectButton.disabled = false;
+            connectButton.textContent = 'Connect';
+        }
         showMessage('Error connecting to network', 'error');
     });
 }

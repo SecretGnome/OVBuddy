@@ -677,7 +677,7 @@ def generate_mock_departures():
             "to": "Zürich, Seebacherplatz",
             "stop": {
                 "departure": (now + timedelta(minutes=8)).strftime("%Y-%m-%dT%H:%M:%S+01:00"),
-                "delay": 120  # 2 minutes delay (120 seconds)
+                "delay": 2  # 2 minutes delay
             }
         },
         {
@@ -686,7 +686,7 @@ def generate_mock_departures():
             "to": "Zürich, Laubegg",
             "stop": {
                 "departure": (now + timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M:%S+01:00"),
-                "delay": 660  # 11 minutes delay (660 seconds)
+                "delay": 11  # 11 minutes delay
             }
         },
         {
@@ -766,7 +766,7 @@ def fetch_departures(stations, limit=20):
                 # Debug: show category info and delay info for first few departures
                 for d in station_departures[:3]:
                     delay = d.get('stop', {}).get('delay', 0)
-                    print(f"    Line {d.get('number')}: category={d.get('category')}, delay={delay}s")
+                    print(f"    Line {d.get('number')}: category={d.get('category')}, delay={delay}min")
         except Exception as e:
             error_msg = str(e)[:50]  # Truncate long error messages
             print(f"Error fetching departures from {station}: {e}")
@@ -841,6 +841,56 @@ def format_line_number(entry):
         result = numeric_part[:2].ljust(3)
     
     return result
+
+def _delay_seconds_from_entry(entry) -> int:
+    """Best-effort: extract a delay in *seconds* from a stationboard entry.
+
+    The upstream API's `stop.delay` field is not consistently documented in-code here,
+    but for OVBuddy we treat it as **minutes**.
+
+    We also fall back to computing delay from prognosis times when present.
+    """
+    stop = entry.get("stop") or {}
+
+    # 1) Prefer explicit delay field if present.
+    raw = stop.get("delay", 0)
+    try:
+        # Convert strings like "2" or "120" to int; treat None/invalid as 0.
+        raw_int = int(raw) if raw is not None else 0
+    except Exception:
+        raw_int = 0
+
+    delay_seconds = 0
+    if raw_int > 0:
+        # Treat as minutes (per product decision)
+        delay_seconds = raw_int * 60
+
+    # 2) If delay wasn't provided, derive from prognosis departure time if available.
+    if delay_seconds <= 0:
+        try:
+            sched = stop.get("departure")
+            prog = (stop.get("prognosis") or {}).get("departure")
+            if sched and prog:
+                sched_dt = datetime.fromisoformat(str(sched))
+                prog_dt = datetime.fromisoformat(str(prog))
+                derived = int((prog_dt - sched_dt).total_seconds())
+                if derived > 0:
+                    delay_seconds = derived
+        except Exception:
+            pass
+
+    return int(max(0, delay_seconds))
+
+def _format_delay_suffix(entry, for_terminal: bool = False) -> str:
+    """Format the delay suffix shown next to the departure time (empty string if none)."""
+    delay_seconds = _delay_seconds_from_entry(entry)
+    if delay_seconds < 60:
+        return ""
+    delay_minutes = delay_seconds // 60
+    if for_terminal:
+        # Use ANSI bold escape codes for terminal output
+        return f" \033[1m>{delay_minutes}min\033[0m"
+    return f">{delay_minutes}min"
 
 def safe_ascii(text):
     """Convert text to ASCII-safe string, replacing Unicode characters"""
@@ -1648,12 +1698,7 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
                 dest_raw = entry["to"]
                 dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
                 time_str = entry["stop"]["departure"][11:16]
-                delay_seconds = entry.get("stop", {}).get("delay", 0)
-                delay_str = ""
-                if delay_seconds and delay_seconds >= 60:  # Only show if >= 1 minute
-                    delay_minutes = delay_seconds // 60
-                    # Use ANSI bold escape codes for terminal output
-                    delay_str = f" \033[1m>{delay_minutes}min\033[0m"  # Bold in terminal
+                delay_str = _format_delay_suffix(entry, for_terminal=True)
                 print(f"{line_num} {dest} {time_str}{delay_str}")
         else:
             print("No departures available")
@@ -1811,11 +1856,7 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
             
             # Check for delay (in seconds)
             # Only show delays that are meaningful (>= 1 minute)
-            delay_seconds = entry.get("stop", {}).get("delay", 0)
-            delay_str = ""
-            if delay_seconds and delay_seconds >= 60:  # Only show if >= 1 minute
-                delay_minutes = delay_seconds // 60
-                delay_str = f">{delay_minutes}min"  # Using > symbol
+            delay_str = _format_delay_suffix(entry, for_terminal=False)
             
             # Get actual width needed for time (always present)
             try:
