@@ -206,9 +206,23 @@ if [ "$DEPLOY_MAIN_ONLY" != true ]; then
         echo ""
         echo -e "${YELLOW}Checking Python dependencies...${NC}"
         
-        # Check if python3 and pip3 are installed
+        # Check if core tools are installed
+        # Git is required for the on-device auto-updater (it uses `git clone`).
+        GIT_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "command -v git >/dev/null 2>&1 && echo 'true' || echo 'false'")
         PYTHON3_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "command -v python3 >/dev/null 2>&1 && echo 'true' || echo 'false'")
         PIP3_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "command -v pip3 >/dev/null 2>&1 && echo 'true' || echo 'false'")
+
+        # Ensure git is installed regardless of python/pip status
+        if [ "$GIT_INSTALLED" = "false" ]; then
+            echo -e "${YELLOW}  Installing git (required for auto-updates)...${NC}"
+            sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo apt-get update && sudo apt-get install -y git" || {
+                echo -e "${RED}  ✗ Failed to install git${NC}"
+                exit 1
+            }
+            echo -e "${GREEN}  ✓ Git installed${NC}"
+        else
+            echo -e "${GREEN}  ✓ Git already installed${NC}"
+        fi
         
         # Install system packages if python3 or pip3 is missing
         if [ "$PYTHON3_INSTALLED" = "false" ] || [ "$PIP3_INSTALLED" = "false" ]; then

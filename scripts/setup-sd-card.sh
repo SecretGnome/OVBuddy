@@ -787,7 +787,7 @@ ConditionPathExists=!/etc/ovbuddy-postboot-done
 Type=oneshot
 ExecStartPre=/bin/sleep 10
 ExecStart=/usr/bin/apt-get update -qq
-ExecStart=/usr/bin/apt-get install -y avahi-daemon python3-pil python3-numpy python3-gpiozero python3-spidev python3-rpi.gpio
+ExecStart=/usr/bin/apt-get install -y git avahi-daemon python3-pil python3-numpy python3-gpiozero python3-spidev python3-rpi.gpio
 ExecStart=/bin/systemctl enable avahi-daemon
 ExecStart=/bin/systemctl start avahi-daemon
 # Best-effort: show an on-screen "ready" signal; never block boot on display errors.
