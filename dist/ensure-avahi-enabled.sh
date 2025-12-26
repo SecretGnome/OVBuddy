@@ -99,3 +99,6 @@ echo "After reboot, from your Mac:"
 echo "  ping ovbuddy.local"
 echo "  ssh pi@ovbuddy.local"
 
+
+
+

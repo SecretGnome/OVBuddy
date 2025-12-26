@@ -117,3 +117,6 @@ echo "  3. Test mDNS: ping ovbuddy.local"
 echo "  4. Check logs: ssh ${PI_USER}@ovbuddy.local 'sudo journalctl -u avahi-daemon -u fix-bonjour -n 50'"
 echo ""
 
+
+
+

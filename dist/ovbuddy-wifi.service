@@ -1,0 +1,25 @@
+[Unit]
+Description=OVBuddy WiFi Monitor and Access Point Fallback
+After=network-online.target fix-bonjour.service avahi-daemon.service
+Wants=network-online.target
+Before=ovbuddy.service ovbuddy-web.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/pi/ovbuddy
+ExecStart=/usr/bin/python3 /home/pi/ovbuddy/wifi-monitor.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment="PYTHONUNBUFFERED=1"
+# Give the network time to initialize
+TimeoutStartSec=60
+# Wait a bit before starting to ensure network is fully ready
+ExecStartPre=/bin/sleep 5
+
+[Install]
+WantedBy=multi-user.target
+

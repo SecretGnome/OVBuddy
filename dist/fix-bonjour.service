@@ -1,10 +1,12 @@
 [Unit]
 Description=Fix Bonjour/mDNS by removing .local entries from /etc/hosts and ensuring avahi-daemon starts
 After=network-online.target systemd-resolved.service
-Before=avahi-daemon.service
+Before=ovbuddy-wifi.service ovbuddy.service ovbuddy-web.service
 Wants=network-online.target
-# Ensure avahi-daemon is started after this service
+# Ensure avahi-daemon is started and enabled
 Wants=avahi-daemon.service
+# Require dbus for avahi-daemon
+After=dbus.service
 
 [Service]
 Type=oneshot
@@ -14,7 +16,10 @@ RemainAfterExit=yes
 StandardOutput=journal
 StandardError=journal
 # Give the script time to complete
-TimeoutStartSec=30
+TimeoutStartSec=60
+# Restart if it fails
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

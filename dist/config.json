@@ -10,6 +10,10 @@
   "max_departures": 6,
   "flip_display": false,
   "use_partial_refresh": false,
-  "update_repository_url": "https://github.com/SecretGnome/OVBuddy"
+  "update_repository_url": "https://github.com/SecretGnome/OVBuddy",
+  "ap_fallback_enabled": true,
+  "ap_ssid": "OVBuddy",
+  "ap_password": "",
+  "display_ap_password": false
 }
 

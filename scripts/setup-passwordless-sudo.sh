@@ -99,6 +99,15 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/sed -i * /etc/hosts
 
 # Allow viewing logs
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/journalctl *
+
+# Allow WiFi monitor service control
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl * ovbuddy-wifi
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl is-active ovbuddy-wifi
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl is-enabled ovbuddy-wifi
+
+# Allow force AP mode script (runs as root, needs full access)
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/bash /home/pi/ovbuddy/force-ap-mode.sh
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash /home/pi/ovbuddy/force-ap-mode.sh
 "
 
 # Upload and install sudoers configuration
