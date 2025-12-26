@@ -640,6 +640,34 @@ fi
 # Fix Bonjour/mDNS setup (always run, regardless of PI_HOST format or deployment type)
 echo ""
 echo -e "${YELLOW}Fixing Bonjour/mDNS setup...${NC}"
+
+# First, ensure avahi-daemon is installed
+echo "  Checking if avahi-daemon is installed..."
+AVAHI_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "dpkg -l | grep -q avahi-daemon && echo 'true' || echo 'false'" 2>/dev/null)
+
+if [ "$AVAHI_INSTALLED" != "true" ]; then
+    echo -e "${YELLOW}  avahi-daemon not found, installing...${NC}"
+    if [ "$PASSWORDLESS_SUDO" = "true" ]; then
+        sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+            sudo -n apt-get update -qq 2>/dev/null && \
+            sudo -n apt-get install -y avahi-daemon 2>/dev/null && \
+            echo '✓ avahi-daemon installed'
+        " 2>/dev/null || {
+            echo -e "${YELLOW}  ⚠ Could not install avahi-daemon${NC}"
+        }
+    else
+        $TIMEOUT_CMD 60 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+            sudo apt-get update -qq 2>/dev/null && \
+            sudo apt-get install -y avahi-daemon 2>/dev/null && \
+            echo '✓ avahi-daemon installed'
+        " 2>/dev/null || {
+            echo -e "${YELLOW}  ⚠ Could not install avahi-daemon (may require passwordless sudo or timed out)${NC}"
+        }
+    fi
+else
+    echo -e "${GREEN}  ✓ avahi-daemon already installed${NC}"
+fi
+
 # Remove .local entries from /etc/hosts that interfere with mDNS
 if [ "$PASSWORDLESS_SUDO" = "true" ]; then
     sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
