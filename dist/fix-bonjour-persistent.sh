@@ -59,23 +59,30 @@ else
 fi
 
 # Start or restart avahi-daemon to pick up changes
-# Use --no-block to avoid hanging systemctl commands
 if systemctl is-active avahi-daemon >/dev/null 2>&1; then
-    # Already running, restart it (non-blocking)
-    systemctl restart avahi-daemon --no-block 2>/dev/null || true
-    log "✓ Triggered avahi-daemon restart (non-blocking)"
+    # Already running, restart it
+    systemctl restart avahi-daemon 2>/dev/null || true
+    log "✓ Restarted avahi-daemon"
 else
-    # Not running, start it (non-blocking)
-    systemctl start avahi-daemon --no-block 2>/dev/null || true
-    log "✓ Triggered avahi-daemon start (non-blocking)"
+    # Not running, start it
+    systemctl start avahi-daemon 2>/dev/null || true
+    log "✓ Started avahi-daemon"
 fi
 
-# Give it a moment to start, then check status (but don't fail if it's not ready yet)
-sleep 1
+# Give it a moment to start, then check status
+sleep 2
 if systemctl is-active avahi-daemon >/dev/null 2>&1; then
     log "✓ Bonjour/mDNS fix complete - avahi-daemon is running"
 else
-    log "⚠ avahi-daemon start triggered but not yet active (this is normal during boot)"
+    log "⚠ avahi-daemon start triggered but not yet active"
+    # Try one more time without --no-block
+    systemctl start avahi-daemon 2>/dev/null || true
+    sleep 1
+    if systemctl is-active avahi-daemon >/dev/null 2>&1; then
+        log "✓ avahi-daemon is now running"
+    else
+        log "⚠ avahi-daemon failed to start, check logs: journalctl -u avahi-daemon"
+    fi
 fi
 
 # Always exit successfully so we don't block the boot process

@@ -57,7 +57,7 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.7"
+VERSION = "0.0.8"
 
 # --------------------------
 # CONFIGURATION
@@ -79,7 +79,11 @@ DEFAULT_CONFIG = {
     "flip_display": False,
     "use_partial_refresh": False,
     "update_repository_url": "https://github.com/tenineight/OVBuddy",
-    "auto_update": True
+    "auto_update": True,
+    "ap_fallback_enabled": True,
+    "ap_ssid": "OVBuddy",
+    "ap_password": "",
+    "display_ap_password": False
 }
 
 # Configuration variables (will be loaded from config.json)
@@ -95,6 +99,10 @@ FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]
 USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
 UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
 AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
+AP_FALLBACK_ENABLED = DEFAULT_CONFIG["ap_fallback_enabled"]
+AP_SSID = DEFAULT_CONFIG["ap_ssid"]
+AP_PASSWORD = DEFAULT_CONFIG["ap_password"]
+DISPLAY_AP_PASSWORD = DEFAULT_CONFIG["display_ap_password"]
 
 # Display constants (not configurable via web)
 DISPLAY_WIDTH = 250
@@ -108,6 +116,7 @@ def load_config():
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
     global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global CONFIG_LAST_MODIFIED
     
     with CONFIG_LOCK:
@@ -142,6 +151,10 @@ def load_config():
             USE_PARTIAL_REFRESH = bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]))
             UPDATE_REPOSITORY_URL = config.get("update_repository_url", DEFAULT_CONFIG["update_repository_url"])
             AUTO_UPDATE = bool(config.get("auto_update", DEFAULT_CONFIG["auto_update"]))
+            AP_FALLBACK_ENABLED = bool(config.get("ap_fallback_enabled", DEFAULT_CONFIG["ap_fallback_enabled"]))
+            AP_SSID = str(config.get("ap_ssid", DEFAULT_CONFIG["ap_ssid"]))
+            AP_PASSWORD = str(config.get("ap_password", DEFAULT_CONFIG["ap_password"]))
+            DISPLAY_AP_PASSWORD = bool(config.get("display_ap_password", DEFAULT_CONFIG["display_ap_password"]))
             
             print(f"Configuration loaded from {CONFIG_FILE}")
         except json.JSONDecodeError as e:
@@ -166,6 +179,10 @@ def save_config():
             "flip_display": FLIP_DISPLAY,
             "use_partial_refresh": USE_PARTIAL_REFRESH,
             "update_repository_url": UPDATE_REPOSITORY_URL,
+            "ap_fallback_enabled": AP_FALLBACK_ENABLED,
+            "ap_ssid": AP_SSID,
+            "ap_password": AP_PASSWORD,
+            "display_ap_password": DISPLAY_AP_PASSWORD,
             "auto_update": AUTO_UPDATE
         }
         
@@ -198,7 +215,11 @@ def get_config_dict():
             "flip_display": FLIP_DISPLAY,
             "use_partial_refresh": USE_PARTIAL_REFRESH,
             "update_repository_url": UPDATE_REPOSITORY_URL,
-            "auto_update": AUTO_UPDATE
+            "auto_update": AUTO_UPDATE,
+            "ap_fallback_enabled": AP_FALLBACK_ENABLED,
+            "ap_ssid": AP_SSID,
+            "ap_password": AP_PASSWORD,
+            "display_ap_password": DISPLAY_AP_PASSWORD
         }
 
 def update_config(new_config):
@@ -206,6 +227,7 @@ def update_config(new_config):
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
     global INVERTED, MAX_DEPARTURES, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     
     with CONFIG_LOCK:
         if "stations" in new_config:
@@ -232,6 +254,14 @@ def update_config(new_config):
             UPDATE_REPOSITORY_URL = str(new_config["update_repository_url"])
         if "auto_update" in new_config:
             AUTO_UPDATE = bool(new_config["auto_update"])
+        if "ap_fallback_enabled" in new_config:
+            AP_FALLBACK_ENABLED = bool(new_config["ap_fallback_enabled"])
+        if "ap_ssid" in new_config:
+            AP_SSID = str(new_config["ap_ssid"])
+        if "ap_password" in new_config:
+            AP_PASSWORD = str(new_config["ap_password"])
+        if "display_ap_password" in new_config:
+            DISPLAY_AP_PASSWORD = bool(new_config["display_ap_password"])
     
     return save_config()
 
@@ -1183,6 +1213,145 @@ def render_loading_screen(epd=None, test_mode=False):
     except Exception as e:
         print(f"Error rendering loading screen: {e}")
 
+def render_ap_info(ssid, password=None, display_password=False, epd=None, test_mode=False):
+    """Render Access Point information on the e-ink display
+    
+    Args:
+        ssid: The AP SSID to display
+        password: The AP password (optional)
+        display_password: Whether to show the password on screen
+        epd: The e-ink display object
+        test_mode: If True, print to console instead of displaying
+    """
+    if test_mode or epd is None:
+        print("\n[Access Point Mode]")
+        print(f"SSID: {ssid}")
+        if display_password and password:
+            print(f"Password: {password}")
+        elif password:
+            print("Password: ********")
+        else:
+            print("Password: (none - open network)")
+        print("IP: 192.168.4.1:8080")
+        return
+    
+    try:
+        bg_color = 0 if INVERTED else 255
+        fg_color = 255 if INVERTED else 0
+        
+        # Create display image
+        image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        draw = ImageDraw.Draw(image)
+        
+        # Load fonts
+        font = ImageFont.load_default()
+        try:
+            font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
+        except:
+            font_bold = font
+        
+        line_height = 14
+        y = 5
+        
+        # Title
+        title = "Access Point Mode"
+        try:
+            bbox = draw.textbbox((0, 0), title, font=font_bold)
+            title_width = bbox[2] - bbox[0]
+        except:
+            title_width = len(title) * 7
+        
+        title_x = (DISPLAY_WIDTH - title_width) // 2
+        draw.text((title_x, y), title, font=font_bold, fill=fg_color)
+        y += line_height + 8
+        
+        # Separator line
+        draw.line([(5, y), (DISPLAY_WIDTH - 5, y)], fill=fg_color, width=1)
+        y += 8
+        
+        # WiFi Network (SSID)
+        draw.text((5, y), "WiFi Network:", font=font_bold, fill=fg_color)
+        y += line_height
+        
+        # SSID (may need to wrap if too long)
+        ssid_text = ssid
+        max_width = DISPLAY_WIDTH - 15
+        try:
+            bbox = draw.textbbox((0, 0), ssid_text, font=font)
+            text_width = bbox[2] - bbox[0]
+        except:
+            text_width = len(ssid_text) * 6
+        
+        if text_width > max_width:
+            # Truncate with ellipsis
+            max_chars = max_width // 6
+            ssid_text = ssid_text[:max_chars-3] + "..."
+        
+        draw.text((10, y), ssid_text, font=font, fill=fg_color)
+        y += line_height + 4
+        
+        # Password
+        if password:
+            draw.text((5, y), "Password:", font=font_bold, fill=fg_color)
+            y += line_height
+            
+            if display_password:
+                # Show actual password (may need to wrap)
+                pwd_text = password
+                try:
+                    bbox = draw.textbbox((0, 0), pwd_text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                except:
+                    text_width = len(pwd_text) * 6
+                
+                if text_width > max_width:
+                    # Split into multiple lines if needed
+                    chars_per_line = max_width // 6
+                    for i in range(0, len(pwd_text), chars_per_line):
+                        line_text = pwd_text[i:i+chars_per_line]
+                        draw.text((10, y), line_text, font=font, fill=fg_color)
+                        y += line_height
+                else:
+                    draw.text((10, y), pwd_text, font=font, fill=fg_color)
+                    y += line_height
+            else:
+                # Show asterisks
+                draw.text((10, y), "********", font=font, fill=fg_color)
+                y += line_height
+        else:
+            draw.text((5, y), "Password:", font=font_bold, fill=fg_color)
+            y += line_height
+            draw.text((10, y), "(open network)", font=font, fill=fg_color)
+            y += line_height
+        
+        y += 4
+        
+        # Web Interface
+        draw.text((5, y), "Web Interface:", font=font_bold, fill=fg_color)
+        y += line_height
+        draw.text((10, y), "http://192.168.4.1:8080", font=font, fill=fg_color)
+        y += line_height + 4
+        
+        # Instructions
+        draw.text((5, y), "Connect to this network", font=font, fill=fg_color)
+        y += line_height
+        draw.text((5, y), "to configure WiFi", font=font, fill=fg_color)
+        
+        # Rotate if needed
+        if FLIP_DISPLAY:
+            image = image.rotate(180, expand=False)
+        
+        # Display
+        image_buffer = epd.getbuffer(image)
+        epd.display(image_buffer)
+        
+        print(f"Displayed AP info: SSID={ssid}, Password={'shown' if display_password and password else 'hidden'}")
+        
+    except Exception as e:
+        print(f"Error rendering AP info: {e}")
+        import traceback
+        traceback.print_exc()
+
 def render_update_screen(epd=None, status="Updating...", version=None, test_mode=False):
     """Render update progress screen on the e-ink display"""
     if test_mode or epd is None:
@@ -2116,11 +2285,49 @@ if FLASK_AVAILABLE:
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
     
+    @app.route('/api/wifi/force-ap', methods=['POST'])
+    def wifi_force_ap():
+        """Force the device into Access Point mode by clearing WiFi config and rebooting"""
+        try:
+            # Run the force-ap-mode script in background (it will reboot)
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            script_path = os.path.join(script_dir, 'force-ap-mode.sh')
+            
+            if not os.path.exists(script_path):
+                return jsonify({
+                    "success": False, 
+                    "error": "Force AP mode script not found"
+                }), 500
+            
+            # Execute the script with sudo in background (it will reboot the device)
+            # Use Popen to avoid waiting for reboot
+            subprocess.Popen(
+                ['sudo', '-n', 'bash', script_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            
+            # Return immediately - device will reboot
+            return jsonify({
+                "success": True,
+                "message": "Clearing WiFi configuration and rebooting. Device will enter AP mode after reboot.",
+                "ap_ssid": AP_SSID,
+                "ap_ip": "192.168.4.1:8080",
+                "reboot": True
+            })
+                
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": str(e)
+            }), 500
+    
     @app.route('/api/services/status', methods=['GET'])
     def services_status():
         """Get status of all OVBuddy services"""
         try:
-            services = ['ovbuddy', 'ovbuddy-web', 'avahi-daemon']
+            services = ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon']
             status = {}
             for service in services:
                 status[service] = get_service_status(service)
@@ -2133,7 +2340,7 @@ if FLASK_AVAILABLE:
         """Control a service (start, stop, restart)"""
         try:
             # Only allow control of OVBuddy services and avahi-daemon
-            if service_name not in ['ovbuddy', 'ovbuddy-web', 'avahi-daemon']:
+            if service_name not in ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon']:
                 return jsonify({"success": False, "error": "Invalid service name"}), 400
             
             result = control_service(service_name, action)
@@ -2617,7 +2824,7 @@ def main(test_mode_arg=False, disable_web=False):
                         print(f"⚠ Error running install-service.sh: {e}")
                         print("Falling back to manual service restart...")
                 
-                # Fallback: manually restart both services if install-service.sh didn't work
+                # Fallback: manually restart all services if install-service.sh didn't work
                 if not services_restarted:
                     try:
                         result = subprocess.run(['systemctl', 'is-active', 'ovbuddy'], 
@@ -2625,7 +2832,7 @@ def main(test_mode_arg=False, disable_web=False):
                         if result.stdout.strip() == 'active':
                             print("Restarting services manually...")
                             
-                            # Restart both services
+                            # Restart ovbuddy service
                             subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy'], 
                                          timeout=10, check=False)
                             
@@ -2635,9 +2842,17 @@ def main(test_mode_arg=False, disable_web=False):
                             if web_check.stdout.strip() == 'active':
                                 subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy-web'], 
                                              timeout=10, check=False)
-                                print("✓ Both services restarted")
+                                print("✓ ovbuddy and ovbuddy-web services restarted")
                             else:
                                 print("✓ ovbuddy service restarted (ovbuddy-web not active)")
+                            
+                            # Check if ovbuddy-wifi service exists and restart it too
+                            wifi_check = subprocess.run(['systemctl', 'is-active', 'ovbuddy-wifi'], 
+                                                       capture_output=True, text=True, timeout=5)
+                            if wifi_check.stdout.strip() == 'active':
+                                subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'ovbuddy-wifi'], 
+                                             timeout=10, check=False)
+                                print("✓ ovbuddy-wifi service also restarted")
                             
                             # Show rebooting message
                             render_update_screen(epd, "Rebooting...", latest_version, test_mode_arg)

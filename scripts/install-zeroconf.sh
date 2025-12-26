@@ -2,8 +2,10 @@
 
 # Script to install pre-compiled zeroconf package on Raspberry Pi
 # This uses an archive retrieved from another Pi to avoid recompiling
-# Usage: ./scripts/install-zeroconf.sh [archive-name]
+# Usage: ./scripts/install-zeroconf.sh [archive-name] [--user|--system]
 #   If archive-name is not provided, will use the most recent archive in retrieved-packages/
+#   --user: Install to user site-packages (default)
+#   --system: Install to system site-packages (requires sudo)
 
 # Change to project root directory (parent of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,6 +13,25 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 set -e  # Exit on error
+
+# Parse command line arguments
+INSTALL_PREFERENCE="user"  # Default to user installation
+ARCHIVE_ARG=""
+for arg in "$@"; do
+    case $arg in
+        --user)
+            INSTALL_PREFERENCE="user"
+            ;;
+        --system)
+            INSTALL_PREFERENCE="system"
+            ;;
+        *)
+            if [ -z "$ARCHIVE_ARG" ]; then
+                ARCHIVE_ARG="$arg"
+            fi
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -67,12 +88,12 @@ fi
 
 # Determine which archive to use
 RETRIEVED_PACKAGES_DIR="retrieved-packages"
-if [ -n "$1" ]; then
+if [ -n "$ARCHIVE_ARG" ]; then
     # Use specified archive
-    if [[ "$1" == *"/"* ]]; then
-        ARCHIVE_PATH="$1"
+    if [[ "$ARCHIVE_ARG" == *"/"* ]]; then
+        ARCHIVE_PATH="$ARCHIVE_ARG"
     else
-        ARCHIVE_PATH="${RETRIEVED_PACKAGES_DIR}/$1"
+        ARCHIVE_PATH="${RETRIEVED_PACKAGES_DIR}/$ARCHIVE_ARG"
     fi
 else
     # Use most recent archive in retrieved-packages/
@@ -169,30 +190,32 @@ fi
 echo "  System site-packages: ${SITE_PACKAGES_DIR:-not found}"
 echo "  User site-packages: ${USER_SITE_PACKAGES_DIR:-not found}"
 
-# Ask user which location to use
+# Determine installation location based on preference
 INSTALL_LOCATION=""
-if [ -n "$USER_SITE_PACKAGES_DIR" ] && [ -n "$SITE_PACKAGES_DIR" ]; then
-    echo ""
-    echo "Where would you like to install zeroconf?"
-    echo "  1) User site-packages (${USER_SITE_PACKAGES_DIR}) - recommended, no sudo needed"
-    echo "  2) System site-packages (${SITE_PACKAGES_DIR}) - requires sudo"
-    read -p "Choose [1 or 2, default: 1]: " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[2]$ ]]; then
+if [ "$INSTALL_PREFERENCE" == "system" ]; then
+    if [ -n "$SITE_PACKAGES_DIR" ]; then
         INSTALL_LOCATION="$SITE_PACKAGES_DIR"
         USE_SUDO="sudo"
+        echo "  Using system site-packages (sudo required)"
     else
+        echo -e "${RED}Error: System site-packages directory not found${NC}"
+        exit 1
+    fi
+else
+    # Default to user site-packages
+    if [ -n "$USER_SITE_PACKAGES_DIR" ]; then
         INSTALL_LOCATION="$USER_SITE_PACKAGES_DIR"
         USE_SUDO=""
+        echo "  Using user site-packages (no sudo needed)"
+    elif [ -n "$SITE_PACKAGES_DIR" ]; then
+        # Fallback to system if user site-packages not available
+        INSTALL_LOCATION="$SITE_PACKAGES_DIR"
+        USE_SUDO="sudo"
+        echo "  Using system site-packages (sudo required)"
+    else
+        echo -e "${RED}Error: No site-packages directory found${NC}"
+        exit 1
     fi
-elif [ -n "$USER_SITE_PACKAGES_DIR" ]; then
-    INSTALL_LOCATION="$USER_SITE_PACKAGES_DIR"
-    USE_SUDO=""
-    echo "  Using user site-packages (no sudo needed)"
-elif [ -n "$SITE_PACKAGES_DIR" ]; then
-    INSTALL_LOCATION="$SITE_PACKAGES_DIR"
-    USE_SUDO="sudo"
-    echo "  Using system site-packages (sudo required)"
 fi
 
 # Check if zeroconf is already installed
@@ -231,10 +254,50 @@ sshpass -p "$PI_PASSWORD" scp $SCP_OPTS "$ARCHIVE_PATH" "${PI_USER}@${PI_SSH_HOS
 }
 echo -e "${GREEN}  ✓ Archive uploaded${NC}"
 
+# Install dependencies
+echo ""
+echo -e "${BLUE}Step 6: Installing dependencies...${NC}"
+echo "  Checking for ifaddr..."
+IFADDR_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+    python3 -c 'import ifaddr' 2>/dev/null && echo 'true' || echo 'false'
+")
+
+if [ "$IFADDR_INSTALLED" != "true" ]; then
+    echo "  Installing ifaddr..."
+    if [ -z "$USE_SUDO" ]; then
+        # User installation - need both --user and --break-system-packages on newer Raspberry Pi OS
+        sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+            pip3 install --user --break-system-packages ifaddr
+        " || {
+            echo -e "${RED}Error: Failed to install ifaddr${NC}"
+            exit 1
+        }
+    else
+        # System installation
+        sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+            $USE_SUDO pip3 install --break-system-packages ifaddr
+        " || {
+            echo -e "${RED}Error: Failed to install ifaddr${NC}"
+            exit 1
+        }
+    fi
+    echo -e "${GREEN}  ✓ ifaddr installed${NC}"
+else
+    echo -e "${GREEN}  ✓ ifaddr already installed${NC}"
+fi
+
 # Extract archive on Pi
 echo ""
-echo -e "${BLUE}Step 6: Extracting archive...${NC}"
+echo -e "${BLUE}Step 7: Extracting archive...${NC}"
 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+    # Ensure target directory exists
+    if [ -n '$USE_SUDO' ]; then
+        $USE_SUDO mkdir -p '$INSTALL_LOCATION'
+    else
+        mkdir -p '$INSTALL_LOCATION'
+    fi
+    
+    # Extract archive
     cd '$INSTALL_LOCATION'
     $USE_SUDO tar -xzf '$REMOTE_ARCHIVE' || {
         echo 'Error: Failed to extract archive'
@@ -249,12 +312,12 @@ echo -e "${GREEN}  ✓ Archive extracted${NC}"
 
 # Clean up remote archive
 echo ""
-echo -e "${BLUE}Step 7: Cleaning up...${NC}"
+echo -e "${BLUE}Step 8: Cleaning up...${NC}"
 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "rm -f '$REMOTE_ARCHIVE'" 2>/dev/null || true
 
 # Verify installation
 echo ""
-echo -e "${BLUE}Step 8: Verifying installation...${NC}"
+echo -e "${BLUE}Step 9: Verifying installation...${NC}"
 INSTALLED_VERSION=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
     python3 -c 'import zeroconf; print(zeroconf.__version__)' 2>/dev/null || echo ''
 ")

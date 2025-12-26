@@ -94,3 +94,6 @@ echo -e "${YELLOW}Note: The fix will take full effect after the next reboot${NC}
 echo "You can reboot now with: ssh ${PI_USER}@${PI_SSH_HOST} 'sudo reboot'"
 echo ""
 
+
+
+

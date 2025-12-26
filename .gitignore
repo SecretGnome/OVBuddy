@@ -1,4 +1,5 @@
 .env
+setup.env
 *.crt
 *.key
 retrieved-packages

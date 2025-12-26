@@ -16,6 +16,7 @@ OVBuddy is a Swiss public transport departure display for Raspberry Pi with e-in
 - 🔌 Runs as systemd service on boot
 - 💻 Service management via web interface
 - 📶 **WiFi network switching** via web interface (no SSH needed!)
+- 🔄 **Automatic WiFi Access Point fallback** when network is unavailable
 
 ## Hardware Requirements
 
@@ -39,6 +40,17 @@ This will guide you through:
 - Installing Raspberry Pi OS Lite (32-bit, Legacy)
 - Configuring WiFi and SSH
 - Setting hostname and credentials
+
+**Automated Setup (Optional):**
+
+To skip manual prompts, create a `setup.env` file in the project root:
+
+```bash
+cp setup.env.example setup.env
+# Edit setup.env with your WiFi credentials and preferences
+```
+
+Then run the setup script - it will automatically use your configuration
 
 **Manual Setup:**
 1. Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
@@ -100,7 +112,7 @@ Or scan the QR code displayed on the e-ink screen during startup.
 - 📶 WiFi network scanning and connection
 - 📊 Real-time status updates
 
-See [WEB_INTERFACE.md](dist/WEB_INTERFACE.md) for detailed documentation, [WIFI_SETUP.md](WIFI_SETUP.md) for WiFi troubleshooting, and [demo.html](demo.html) for a visual preview.
+See [WEB_INTERFACE.md](dist/WEB_INTERFACE.md) for detailed documentation, [WIFI_SETUP.md](WIFI_SETUP.md) for WiFi troubleshooting, [WIFI_AP_FALLBACK.md](WIFI_AP_FALLBACK.md) for access point fallback setup, and [demo.html](demo.html) for a visual preview.
 
 ### Configuration Options
 
@@ -163,6 +175,98 @@ OVBuddy/
 ```
 
 ## Troubleshooting
+
+### Can't SSH into Raspberry Pi
+
+If you can reach the Pi via `ovbuddy.local` (ping works) but SSH authentication fails with "Permission denied":
+
+**Quick Test:**
+```bash
+cd scripts
+./test-ssh.sh
+```
+
+This diagnostic script will test:
+- Network connectivity
+- mDNS resolution
+- SSH port accessibility
+- SSH authentication (both key and password)
+
+**Common Causes:**
+1. **Password hash issue**: The password may not have been set correctly during SD card setup
+2. **Wrong password**: Double-check your password in `setup.env`
+3. **First boot not complete**: Wait 3-5 minutes after first power-on (includes auto-reboot)
+
+**Solutions:**
+
+**Option A: Recreate SD Card (Recommended)**
+```bash
+cd scripts
+./setup-sd-card.sh
+```
+
+The updated script now uses OpenSSL for more reliable password hash generation.
+
+**Option B: Manual Password Reset**
+
+If you have a monitor and keyboard:
+1. Connect them to the Pi
+2. Log in at the console
+3. Run: `passwd`
+4. Set a new password
+
+**Option C: Use SSH Keys**
+
+Set up key-based authentication instead:
+```bash
+ssh-keygen -t ed25519
+ssh-copy-id pi@ovbuddy.local
+```
+
+See [SSH_PASSWORD_FIX.md](doc/SSH_PASSWORD_FIX.md) for detailed troubleshooting.
+
+### Force AP Mode Not Working
+
+If the "Force AP Mode" button doesn't work or the device reconnects to known WiFi instead of entering AP mode, run the diagnostic script:
+
+```bash
+cd scripts
+./diagnose-force-ap.sh
+```
+
+This will check:
+- WiFi manager type (NetworkManager vs wpa_supplicant)
+- Current WiFi connection status
+- Auto-connect settings for configured networks
+- Force AP flag status
+- wifi-monitor service status
+- Whether device is in AP mode
+
+**Common Issue: Device Reconnects to WiFi After Reboot**
+
+This happens when auto-reconnect is not properly disabled. The fix:
+1. Redeploy with the updated scripts: `./scripts/deploy.sh`
+2. The updated `force-ap-mode.sh` now disables auto-connect before rebooting
+3. This prevents the device from reconnecting to known networks
+4. wifi-monitor can then properly enter AP mode
+
+See [FORCE_AP_FIX_AUTOCONNECT.md](doc/FORCE_AP_FIX_AUTOCONNECT.md) for technical details and [FORCE_AP_TROUBLESHOOTING.md](doc/FORCE_AP_TROUBLESHOOTING.md) for detailed troubleshooting.
+
+### Services don't start on boot
+
+If services don't start automatically after reboot, use the diagnostic script:
+
+```bash
+cd scripts
+./fix-boot-services.sh
+```
+
+This will check and fix:
+- avahi-daemon (Bonjour/mDNS)
+- ovbuddy-wifi (WiFi monitor)
+- ovbuddy and ovbuddy-web services
+
+See [BOOT_SERVICES.md](BOOT_SERVICES.md) for detailed troubleshooting.
 
 ### Service won't start
 
@@ -292,6 +396,25 @@ Quick checks:
    sudo systemctl restart wpa_supplicant
    ```
 
+### Can't connect to configured WiFi
+
+**WiFi Access Point Fallback** is automatically enabled when you deploy OVBuddy. When the configured WiFi network is unavailable, the device will automatically create its own access point.
+
+See [WIFI_AP_FALLBACK.md](WIFI_AP_FALLBACK.md) for detailed information.
+
+**How it works:**
+1. Device tries to connect to configured WiFi
+2. After 2 minutes of no connection, switches to AP mode
+3. Creates WiFi network "OVBuddy" (configurable)
+4. Connect to it and access web interface at `http://192.168.4.1:8080`
+5. Configure WiFi through the web interface
+6. Automatically reconnects when WiFi is available
+
+**To enable/disable:**
+- Via web interface: Toggle "Enable WiFi Access Point Fallback"
+- Via config.json: Set `"ap_fallback_enabled": true` or `false`
+- Then redeploy: `./scripts/deploy.sh`
+
 ## Service Management
 
 ```bash
@@ -306,6 +429,11 @@ sudo journalctl -u ovbuddy -f          # View logs
 sudo systemctl status ovbuddy-web      # Check status
 sudo systemctl restart ovbuddy-web     # Restart
 sudo journalctl -u ovbuddy-web -f      # View logs
+
+# WiFi monitor service (if installed)
+sudo systemctl status ovbuddy-wifi     # Check status
+sudo systemctl restart ovbuddy-wifi    # Restart
+sudo journalctl -u ovbuddy-wifi -f     # View logs
 ```
 
 ## Development

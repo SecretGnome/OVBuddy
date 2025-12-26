@@ -60,6 +60,10 @@ function loadConfiguration() {
             document.getElementById('flip_display').checked = data.flip_display || false;
             document.getElementById('use_partial_refresh').checked = data.use_partial_refresh || false;
             document.getElementById('auto_update').checked = data.auto_update !== undefined ? data.auto_update : true;
+            document.getElementById('ap_fallback_enabled').checked = data.ap_fallback_enabled !== undefined ? data.ap_fallback_enabled : true;
+            document.getElementById('ap_ssid').value = data.ap_ssid || 'OVBuddy';
+            document.getElementById('ap_password').value = data.ap_password || '';
+            document.getElementById('display_ap_password').checked = data.display_ap_password || false;
         })
         .catch(error => {
             console.error('Error loading config:', error);
@@ -94,7 +98,11 @@ function saveConfiguration(event) {
         inverted: document.getElementById('inverted').checked,
         flip_display: document.getElementById('flip_display').checked,
         use_partial_refresh: document.getElementById('use_partial_refresh').checked,
-        auto_update: document.getElementById('auto_update').checked
+        auto_update: document.getElementById('auto_update').checked,
+        ap_fallback_enabled: document.getElementById('ap_fallback_enabled').checked,
+        ap_ssid: document.getElementById('ap_ssid').value,
+        ap_password: document.getElementById('ap_password').value,
+        display_ap_password: document.getElementById('display_ap_password').checked
     };
     
     console.log('Sending config:', config);
@@ -311,6 +319,62 @@ function connectToNetwork() {
         connectButton.disabled = false;
         connectButton.textContent = 'Connect';
         showMessage('Error connecting to network', 'error');
+    });
+}
+
+function forceApMode() {
+    console.log('Forcing AP mode...');
+    
+    // Confirm action
+    if (!confirm('Force Access Point mode?\n\nThis will:\n1. Clear all WiFi configurations\n2. Reboot the device\n3. Enter AP mode after reboot\n\nYou will lose connection and need to connect to the AP.\n\nContinue?')) {
+        return;
+    }
+    
+    const forceApButton = document.getElementById('forceApButton');
+    forceApButton.disabled = true;
+    forceApButton.textContent = 'Rebooting...';
+    
+    console.log('Sending force AP request...');
+    
+    fetch('/api/wifi/force-ap', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log('Force AP response:', data);
+        
+        if (data.success) {
+            showMessage('Device is rebooting. Connect to "' + data.ap_ssid + '" in about 60 seconds.', 'success');
+            
+            // Show reboot info
+            alert(
+                'Device is Rebooting!\n\n' +
+                'WiFi configuration has been cleared.\n' +
+                'The device will reboot and enter Access Point mode.\n\n' +
+                'Wait about 60 seconds, then:\n\n' +
+                '1. Look for WiFi network: ' + data.ap_ssid + '\n' +
+                '2. Connect to it\n' +
+                '3. Open: http://' + data.ap_ip + '\n' +
+                '4. Configure WiFi settings\n\n' +
+                'This page will no longer be accessible until you reconnect.'
+            );
+            
+            // Keep button disabled - page will be unreachable soon
+            forceApButton.textContent = 'Device Rebooting...';
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to force AP mode'), 'error');
+            forceApButton.disabled = false;
+            forceApButton.textContent = 'Force AP Mode';
+        }
+    })
+    .catch(error => {
+        console.error('Error forcing AP mode:', error);
+        // This might be expected if device reboots quickly
+        showMessage('Device is rebooting. Connect to AP in about 60 seconds.', 'info');
+        forceApButton.textContent = 'Device Rebooting...';
     });
 }
 

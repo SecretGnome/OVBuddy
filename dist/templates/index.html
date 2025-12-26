@@ -112,6 +112,34 @@
                         <div class="help-text">When enabled, the system will automatically update and restart when a new version is available</div>
                     </div>
                     
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="ap_fallback_enabled" name="ap_fallback_enabled">
+                            Enable WiFi Access Point Fallback
+                        </label>
+                        <div class="help-text">When enabled, the device will create its own WiFi network if it can't connect to a configured network</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="ap_ssid">Access Point Name (SSID)</label>
+                        <input type="text" id="ap_ssid" name="ap_ssid" placeholder="OVBuddy">
+                        <div class="help-text">The name of the WiFi network when in access point mode</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="ap_password">Access Point Password</label>
+                        <input type="password" id="ap_password" name="ap_password" placeholder="Leave empty for open network">
+                        <div class="help-text">Password for the access point (leave empty for no password)</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="display_ap_password" name="display_ap_password">
+                            Display password on screen when in AP mode
+                        </label>
+                        <div class="help-text">When enabled, the password will be shown on the e-ink display (useful for initial setup)</div>
+                    </div>
+                    
                     <button type="submit">Save Configuration</button>
                 </form>
             </div>
@@ -160,6 +188,7 @@
                     <div class="form-group">
                         <button type="button" id="scanButton" class="secondary" onclick="scanNetworks()">Scan for Networks</button>
                         <button type="button" id="refreshStatusButton" onclick="refreshWifiStatus()">Refresh Status</button>
+                        <button type="button" id="forceApButton" onclick="forceApMode()" style="background: #d97706;">Force AP Mode</button>
                     </div>
                     
                     <div id="networkListContainer" style="display: none;">
