@@ -55,6 +55,31 @@ body {
     margin-bottom: 0;
 }
 
+/* Two-column helpers (used for config form + services list) */
+.two-column-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+}
+
+.two-column-grid .span-2 {
+    grid-column: 1 / -1;
+}
+
+.services-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.services-grid .service-status {
+    margin-bottom: 0;
+}
+
+.services-grid p {
+    grid-column: 1 / -1;
+}
+
 /* Terminal Header */
 .terminal-header {
     border: 2px solid var(--border-color);
@@ -609,6 +634,18 @@ button.warning:hover {
     }
 
     .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .two-column-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .two-column-grid .span-2 {
+        grid-column: auto;
+    }
+
+    .services-grid {
         grid-template-columns: 1fr;
     }
     
