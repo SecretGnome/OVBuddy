@@ -78,7 +78,8 @@ DEFAULT_CONFIG = {
     "max_departures": 6,
     "flip_display": False,
     "use_partial_refresh": False,
-    "update_repository_url": "https://github.com/tenineight/OVBuddy",
+    # Keep this in sync with the web UI footer link + the canonical upstream repo.
+    "update_repository_url": "https://github.com/SecretGnome/OVBuddy",
     "auto_update": False,
     "ap_fallback_enabled": True,
     "ap_ssid": "OVBuddy",
@@ -88,6 +89,25 @@ DEFAULT_CONFIG = {
     "last_wifi_ssid": "",
     "last_wifi_password": ""
 }
+
+def _parse_bool(value, default=False) -> bool:
+    """Parse bools that may come from JSON as bool/int/str.
+
+    Important: bool("false") is True in Python, so we must not use bool(...) on strings.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("1", "true", "yes", "y", "on"):
+            return True
+        if v in ("0", "false", "no", "n", "off", ""):
+            return False
+    return default
 
 # Configuration variables (will be loaded from config.json)
 STATIONS = DEFAULT_CONFIG["stations"]
@@ -151,16 +171,16 @@ def load_config():
             QR_CODE_DISPLAY_DURATION = max(0, int(config.get("qr_code_display_duration", DEFAULT_CONFIG["qr_code_display_duration"])))
             DESTINATION_PREFIXES_TO_REMOVE = config.get("destination_prefixes_to_remove", DEFAULT_CONFIG["destination_prefixes_to_remove"])
             DESTINATION_EXCEPTIONS = config.get("destination_exceptions", DEFAULT_CONFIG["destination_exceptions"])
-            INVERTED = bool(config.get("inverted", DEFAULT_CONFIG["inverted"]))
+            INVERTED = _parse_bool(config.get("inverted", DEFAULT_CONFIG["inverted"]), DEFAULT_CONFIG["inverted"])
             MAX_DEPARTURES = max(1, min(20, int(config.get("max_departures", DEFAULT_CONFIG["max_departures"]))))
-            FLIP_DISPLAY = bool(config.get("flip_display", DEFAULT_CONFIG["flip_display"]))
-            USE_PARTIAL_REFRESH = bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]))
+            FLIP_DISPLAY = _parse_bool(config.get("flip_display", DEFAULT_CONFIG["flip_display"]), DEFAULT_CONFIG["flip_display"])
+            USE_PARTIAL_REFRESH = _parse_bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]), DEFAULT_CONFIG["use_partial_refresh"])
             UPDATE_REPOSITORY_URL = config.get("update_repository_url", DEFAULT_CONFIG["update_repository_url"])
-            AUTO_UPDATE = bool(config.get("auto_update", DEFAULT_CONFIG["auto_update"]))
-            AP_FALLBACK_ENABLED = bool(config.get("ap_fallback_enabled", DEFAULT_CONFIG["ap_fallback_enabled"]))
+            AUTO_UPDATE = _parse_bool(config.get("auto_update", DEFAULT_CONFIG["auto_update"]), DEFAULT_CONFIG["auto_update"])
+            AP_FALLBACK_ENABLED = _parse_bool(config.get("ap_fallback_enabled", DEFAULT_CONFIG["ap_fallback_enabled"]), DEFAULT_CONFIG["ap_fallback_enabled"])
             AP_SSID = str(config.get("ap_ssid", DEFAULT_CONFIG["ap_ssid"]))
             AP_PASSWORD = str(config.get("ap_password", DEFAULT_CONFIG["ap_password"]))
-            DISPLAY_AP_PASSWORD = bool(config.get("display_ap_password", DEFAULT_CONFIG["display_ap_password"]))
+            DISPLAY_AP_PASSWORD = _parse_bool(config.get("display_ap_password", DEFAULT_CONFIG["display_ap_password"]), DEFAULT_CONFIG["display_ap_password"])
             LAST_WIFI_SSID = str(config.get("last_wifi_ssid", DEFAULT_CONFIG["last_wifi_ssid"]))
             LAST_WIFI_PASSWORD = str(config.get("last_wifi_password", DEFAULT_CONFIG["last_wifi_password"]))
             
@@ -256,25 +276,25 @@ def update_config(new_config):
         if "destination_exceptions" in new_config:
             DESTINATION_EXCEPTIONS = new_config["destination_exceptions"] if isinstance(new_config["destination_exceptions"], list) else []
         if "inverted" in new_config:
-            INVERTED = bool(new_config["inverted"])
+            INVERTED = _parse_bool(new_config["inverted"], INVERTED)
         if "max_departures" in new_config:
             MAX_DEPARTURES = max(1, min(20, int(new_config["max_departures"])))
         if "flip_display" in new_config:
-            FLIP_DISPLAY = bool(new_config["flip_display"])
+            FLIP_DISPLAY = _parse_bool(new_config["flip_display"], FLIP_DISPLAY)
         if "use_partial_refresh" in new_config:
-            USE_PARTIAL_REFRESH = bool(new_config["use_partial_refresh"])
+            USE_PARTIAL_REFRESH = _parse_bool(new_config["use_partial_refresh"], USE_PARTIAL_REFRESH)
         if "update_repository_url" in new_config:
             UPDATE_REPOSITORY_URL = str(new_config["update_repository_url"])
         if "auto_update" in new_config:
-            AUTO_UPDATE = bool(new_config["auto_update"])
+            AUTO_UPDATE = _parse_bool(new_config["auto_update"], AUTO_UPDATE)
         if "ap_fallback_enabled" in new_config:
-            AP_FALLBACK_ENABLED = bool(new_config["ap_fallback_enabled"])
+            AP_FALLBACK_ENABLED = _parse_bool(new_config["ap_fallback_enabled"], AP_FALLBACK_ENABLED)
         if "ap_ssid" in new_config:
             AP_SSID = str(new_config["ap_ssid"])
         if "ap_password" in new_config:
             AP_PASSWORD = str(new_config["ap_password"])
         if "display_ap_password" in new_config:
-            DISPLAY_AP_PASSWORD = bool(new_config["display_ap_password"])
+            DISPLAY_AP_PASSWORD = _parse_bool(new_config["display_ap_password"], DISPLAY_AP_PASSWORD)
         if "last_wifi_ssid" in new_config:
             LAST_WIFI_SSID = str(new_config["last_wifi_ssid"])
         if "last_wifi_password" in new_config:
@@ -348,9 +368,20 @@ def get_latest_version_from_github(repo_url):
         api_url = f"https://api.github.com/repos/{owner}/{repo}/tags"
         print(f"Checking for updates at: {api_url}")
         
-        response = requests.get(api_url, timeout=10)
+        headers = {
+            "Accept": "application/vnd.github+json",
+            # A UA helps with some proxies and keeps GitHub happy.
+            "User-Agent": f"OVBuddy/{VERSION}",
+        }
+        response = requests.get(api_url, timeout=10, headers=headers)
         if response.status_code != 200:
-            print(f"GitHub API returned status {response.status_code}")
+            msg = None
+            try:
+                payload = response.json()
+                msg = payload.get("message")
+            except Exception:
+                msg = None
+            print(f"GitHub API returned status {response.status_code}" + (f": {msg}" if msg else ""))
             return None
         
         tags = response.json()
@@ -396,13 +427,40 @@ def check_for_updates():
     """Check if a newer version is available on GitHub
     Returns: (update_available, latest_version) tuple
     """
+    return check_for_updates_cached(force=False)
+
+# Cache GitHub version checks to avoid rate-limiting.
+_UPDATE_CHECK_CACHE = {
+    "checked_at": 0.0,
+    "latest_version": None,
+    "update_available": False,
+    "error": None,
+}
+_UPDATE_CHECK_TTL_SECONDS = 10 * 60  # 10 minutes
+
+def check_for_updates_cached(force: bool = False):
+    """Cached update check.
+
+    The web UI polls /api/version frequently; without caching, we'd hit GitHub's
+    unauthenticated rate limits quickly and stop detecting updates.
+    """
     try:
+        now = time.time()
+        if not force and (now - float(_UPDATE_CHECK_CACHE.get("checked_at", 0.0))) < _UPDATE_CHECK_TTL_SECONDS:
+            return (_UPDATE_CHECK_CACHE.get("update_available", False), _UPDATE_CHECK_CACHE.get("latest_version"))
+
         print(f"Current version: {VERSION}")
         print(f"Checking repository: {UPDATE_REPOSITORY_URL}")
         
         latest_version = get_latest_version_from_github(UPDATE_REPOSITORY_URL)
         if latest_version is None:
             print("Could not determine latest version")
+            _UPDATE_CHECK_CACHE.update({
+                "checked_at": now,
+                "latest_version": None,
+                "update_available": False,
+                "error": "Could not determine latest version (GitHub API error / rate limit / offline)",
+            })
             return (False, None)
         
         print(f"Comparing versions: '{VERSION}' vs '{latest_version}'")
@@ -411,18 +469,42 @@ def check_for_updates():
         
         if comparison > 0:
             print(f"Update available: {VERSION} -> {latest_version}")
+            _UPDATE_CHECK_CACHE.update({
+                "checked_at": now,
+                "latest_version": latest_version,
+                "update_available": True,
+                "error": None,
+            })
             return (True, latest_version)
         elif comparison == 0:
             print(f"Already running the latest version ({VERSION})")
+            _UPDATE_CHECK_CACHE.update({
+                "checked_at": now,
+                "latest_version": latest_version,
+                "update_available": False,
+                "error": None,
+            })
             return (False, latest_version)
         else:
             print(f"Running a newer version than GitHub ({VERSION} > {latest_version})")
+            _UPDATE_CHECK_CACHE.update({
+                "checked_at": now,
+                "latest_version": latest_version,
+                "update_available": False,
+                "error": None,
+            })
             return (False, latest_version)
     
     except Exception as e:
         print(f"Error checking for updates: {e}")
         import traceback
         traceback.print_exc()
+        _UPDATE_CHECK_CACHE.update({
+            "checked_at": time.time(),
+            "latest_version": None,
+            "update_available": False,
+            "error": f"Error checking for updates: {e}",
+        })
         return (False, None)
 
 def get_file_version(file_path):
@@ -2550,7 +2632,7 @@ if FLASK_AVAILABLE:
             latest_version = None
             update_available = False
             try:
-                update_available, latest_version = check_for_updates()
+                update_available, latest_version = check_for_updates_cached(force=False)
             except Exception:
                 pass  # Don't fail the endpoint if version check fails
             
@@ -2561,10 +2643,29 @@ if FLASK_AVAILABLE:
                 "version_mismatch": version_mismatch,
                 "update_available": update_available,
                 "update_status": update_status,
-                "needs_restart": version_mismatch or update_status.get("update_in_progress", False)
+                "needs_restart": version_mismatch or update_status.get("update_in_progress", False),
+                "update_check_cached_at": _UPDATE_CHECK_CACHE.get("checked_at", 0.0),
+                "update_check_error": _UPDATE_CHECK_CACHE.get("error")
             })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/check-updates', methods=['POST'])
+    def check_updates_now():
+        """Force a fresh GitHub update check (bypasses cache).
+
+        The UI can call this when the user clicks "Check for updates".
+        """
+        try:
+            update_available, latest_version = check_for_updates_cached(force=True)
+            return jsonify({
+                "update_available": update_available,
+                "latest_version": latest_version,
+                "update_check_cached_at": _UPDATE_CHECK_CACHE.get("checked_at", 0.0),
+                "update_check_error": _UPDATE_CHECK_CACHE.get("error"),
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route('/api/shutdown', methods=['POST'])
     def shutdown_display():
@@ -2729,7 +2830,7 @@ if FLASK_AVAILABLE:
                 }), 400
             
             # Check if an update is available
-            update_available, latest_version = check_for_updates()
+            update_available, latest_version = check_for_updates_cached(force=True)
             if not update_available:
                 # Check if user is forcing update to a specific version
                 if not target_version:
@@ -2946,7 +3047,7 @@ def main(test_mode_arg=False, disable_web=False):
     print(f"OVBuddy v{VERSION}")
     print("="*50)
     try:
-        update_available, latest_version = check_for_updates()
+        update_available, latest_version = check_for_updates_cached(force=True)
         if update_available and latest_version:
             if AUTO_UPDATE:
                 print(f"\n🎉 Update available: v{VERSION} -> v{latest_version}")

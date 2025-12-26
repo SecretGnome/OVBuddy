@@ -608,6 +608,21 @@ function loadVersionInfo() {
             
             versionText.innerHTML = versionHtml;
             
+            // Always provide a manual "Check for updates" button (forces a fresh GitHub check)
+            let checkButton = document.getElementById('checkUpdatesButton');
+            if (!checkButton) {
+                checkButton = document.createElement('button');
+                checkButton.id = 'checkUpdatesButton';
+                checkButton.className = 'secondary';
+                checkButton.style.marginTop = '10px';
+                checkButton.style.width = '100%';
+                checkButton.textContent = 'Check for updates';
+                checkButton.onclick = checkUpdatesNow;
+                versionInfo.appendChild(checkButton);
+            }
+            checkButton.disabled = false;
+            checkButton.textContent = 'Check for updates';
+
             // Add or update Force Update button
             let updateButton = document.getElementById('forceUpdateButton');
             if (updateAvailable && !updateInProgress && !needsRestart) {
@@ -633,6 +648,42 @@ function loadVersionInfo() {
             console.error('Error loading version:', error);
             versionText.textContent = 'Version: Unable to load';
         });
+}
+
+function checkUpdatesNow() {
+    const checkButton = document.getElementById('checkUpdatesButton');
+    if (!checkButton) return;
+
+    checkButton.disabled = true;
+    checkButton.textContent = 'Checking...';
+
+    fetch('/api/check-updates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+    })
+    .then(response => response.json())
+    .then(data => {
+        // Refresh version info to reflect latest check result
+        loadVersionInfo();
+
+        if (data.update_check_error) {
+            showMessage('Update check failed: ' + data.update_check_error, 'error');
+        } else if (data.update_available) {
+            showMessage('Update available: v' + (data.latest_version || '?'), 'success');
+        } else {
+            showMessage('No update available', 'success');
+        }
+    })
+    .catch(error => {
+        console.error('Error checking updates:', error);
+        showMessage('Error checking updates', 'error');
+    })
+    .finally(() => {
+        // Button label/state will be reset by loadVersionInfo(); just re-enable as fallback.
+        checkButton.disabled = false;
+        checkButton.textContent = 'Check for updates';
+    });
 }
 
 function triggerUpdate() {
