@@ -12,6 +12,60 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+usage() {
+    cat << 'EOF'
+OVBuddy SD Card Setup Helper
+
+Usage:
+  ./setup-sd-card.sh
+
+Automation / non-interactive options:
+  --disk <diskN>     Target disk identifier (example: disk2)
+  --yes              Skip confirmations (requires --disk for safety)
+  --method <1|2>     Setup method: 1 = Automated CLI, 2 = Manual GUI (Raspberry Pi Imager)
+  -h, --help         Show this help
+
+Notes:
+  - If `setup.env` exists, WiFi/hostname/user/password are loaded from it.
+  - The automated CLI method is destructive: it will erase the target disk.
+EOF
+}
+
+# Optional automation flags (defaults preserve existing interactive behavior)
+DISK_ID_ARG=""
+ASSUME_YES=false
+METHOD_ARG=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --disk)
+            shift
+            DISK_ID_ARG="${1:-}"
+            ;;
+        --yes)
+            ASSUME_YES=true
+            ;;
+        --method)
+            shift
+            METHOD_ARG="${1:-}"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo -e "${RED}Error: Unknown option: $1${NC}"
+            echo ""
+            usage
+            exit 2
+            ;;
+        *)
+            # No positional args supported
+            ;;
+    esac
+    shift || true
+done
+
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          OVBuddy SD Card Setup Helper                      ║${NC}"
 echo -e "${BLUE}║     For Raspberry Pi Zero W 1.1 with RPi OS Lite          ║${NC}"
@@ -55,8 +109,8 @@ if [[ -f "$SETUP_ENV" ]]; then
     USERNAME=${USERNAME:-pi}
     USER_PASSWORD=${USER_PASSWORD:-raspberry}
     
-    # Default to automated CLI when using setup.env
-    SETUP_METHOD="1"
+    # Default to automated CLI when using setup.env (unless overridden)
+    SETUP_METHOD="${METHOD_ARG:-1}"
     
     echo -e "${BLUE}Configuration from setup.env:${NC}"
     echo "  WiFi SSID: $WIFI_SSID"
@@ -67,20 +121,30 @@ if [[ -f "$SETUP_ENV" ]]; then
     echo "  User Password: [hidden]"
     echo ""
     
-    read -p "Continue with these settings? (y/N) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted."
-        exit 1
+    if [ "$ASSUME_YES" = true ]; then
+        echo -e "${YELLOW}--yes set; skipping interactive confirmation.${NC}"
+        echo ""
+    else
+        read -p "Continue with these settings? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Aborted."
+            exit 1
+        fi
+        echo ""
     fi
-    echo ""
 else
     # Prompt for setup method
     echo -e "${BLUE}Choose setup method:${NC}"
     echo "  1. Automated CLI (downloads and writes image automatically)"
     echo "  2. Manual GUI (opens Raspberry Pi Imager with instructions)"
     echo ""
-    read -p "Enter choice (1 or 2): " SETUP_METHOD
+    if [[ -n "$METHOD_ARG" ]]; then
+        SETUP_METHOD="$METHOD_ARG"
+        echo -e "${YELLOW}Using --method ${SETUP_METHOD}${NC}"
+    else
+        read -p "Enter choice (1 or 2): " SETUP_METHOD
+    fi
     echo ""
     
     if [[ "$SETUP_METHOD" != "1" && "$SETUP_METHOD" != "2" ]]; then
@@ -127,13 +191,18 @@ if [[ ! -f "$SETUP_ENV" ]]; then
     echo "  WiFi Country: $WIFI_COUNTRY"
     echo ""
     
-    read -p "Continue with these settings? (y/N) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted."
-        exit 1
+    if [ "$ASSUME_YES" = true ]; then
+        echo -e "${YELLOW}--yes set; skipping interactive confirmation.${NC}"
+        echo ""
+    else
+        read -p "Continue with these settings? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Aborted."
+            exit 1
+        fi
+        echo ""
     fi
-    echo ""
 fi
 
 # ============================================================================
@@ -156,7 +225,13 @@ if [[ "$SETUP_METHOD" == "1" ]]; then
     diskutil list
     echo ""
     
-    read -p "Enter the disk identifier (e.g., disk2): " DISK_ID
+    DISK_ID=""
+    if [[ -n "$DISK_ID_ARG" ]]; then
+        DISK_ID="$DISK_ID_ARG"
+        echo -e "${YELLOW}Using --disk ${DISK_ID}${NC}"
+    else
+        read -p "Enter the disk identifier (e.g., disk2): " DISK_ID
+    fi
     
     if [[ ! "$DISK_ID" =~ ^disk[0-9]+$ ]]; then
         echo -e "${RED}Error: Invalid disk identifier. Must be in format 'diskN'.${NC}"
@@ -177,11 +252,19 @@ if [[ "$SETUP_METHOD" == "1" ]]; then
     echo -e "${RED}WARNING: This will erase ALL data on $DISK_ID!${NC}"
     diskutil info "$DISK_ID" | grep -E "Device Node|Media Name|Total Size"
     echo ""
-    read -p "Are you ABSOLUTELY sure you want to continue? Type 'YES' to proceed: " CONFIRM
-    
-    if [[ "$CONFIRM" != "YES" ]]; then
-        echo "Aborted."
-        exit 1
+    if [ "$ASSUME_YES" = true ]; then
+        if [[ -z "$DISK_ID_ARG" ]]; then
+            echo -e "${RED}Error: --yes requires --disk <diskN> for safety.${NC}"
+            exit 1
+        fi
+        echo -e "${YELLOW}--yes set; proceeding without interactive confirmation.${NC}"
+    else
+        read -p "Are you ABSOLUTELY sure you want to continue? Type 'YES' to proceed: " CONFIRM
+        
+        if [[ "$CONFIRM" != "YES" ]]; then
+            echo "Aborted."
+            exit 1
+        fi
     fi
     
     # Create temporary directory
@@ -479,18 +562,65 @@ WPA_BOOT_EOF
     chmod 600 "$BOOT_VOLUME/wpa_supplicant.conf" 2>/dev/null || true
     echo -e "${GREEN}✓ WiFi fallback written${NC}"
     echo ""
+
+    # Stage e-ink driver + ready-screen script onto the boot partition so the Pi can
+    # show a "Ready to deploy" message after first-boot provisioning completes.
+    echo -e "${YELLOW}Staging e-ink driver + ready screen onto boot partition...${NC}"
+    OVBUDDY_EINK_DIR="$BOOT_VOLUME/ovbuddy_eink"
+    mkdir -p "$OVBUDDY_EINK_DIR"
+    
+    DIST_DIR="$PROJECT_ROOT/dist"
+    if [ -f "$DIST_DIR/epd2in13_V4.py" ] && [ -f "$DIST_DIR/epdconfig.py" ] && [ -f "$DIST_DIR/ovbuddy_eink_ready.py" ]; then
+        cp "$DIST_DIR/epd2in13_V4.py" "$OVBUDDY_EINK_DIR/"
+        cp "$DIST_DIR/epdconfig.py" "$OVBUDDY_EINK_DIR/"
+        cp "$DIST_DIR/ovbuddy_eink_ready.py" "$OVBUDDY_EINK_DIR/"
+        chmod 755 "$OVBUDDY_EINK_DIR/ovbuddy_eink_ready.py" 2>/dev/null || true
+        echo -e "${GREEN}✓ e-ink files staged at: $OVBUDDY_EINK_DIR${NC}"
+    else
+        echo -e "${YELLOW}⚠ e-ink driver files not found in dist/. Skipping ready-screen staging.${NC}"
+        echo -e "${YELLOW}  Expected: dist/epd2in13_V4.py, dist/epdconfig.py, dist/ovbuddy_eink_ready.py${NC}"
+    fi
+    echo ""
     
     # Generate password hash - try openssl first, then Python as fallback
     echo -e "${YELLOW}Generating password hash...${NC}"
     
     PASSWORD_HASH=""
     
-    # Method 1: Try openssl (most reliable, works on macOS and Linux)
-    if command -v openssl &> /dev/null; then
-        # NOTE: With `set -e`, a failing command substitution can abort the script before
-        # we can fall back. So we must guard it with an `if ...; then` to capture failure.
-        if PASSWORD_HASH=$(openssl passwd -6 -stdin 2>/dev/null <<<"$USER_PASSWORD"); then
-            echo -e "${GREEN}✓ Password hash generated (via openssl)${NC}"
+    # Method 1: Prefer an OpenSSL that supports SHA-512 crypt (-6).
+    # NOTE: macOS system OpenSSL is typically LibreSSL and does NOT support -6.
+    OPENSSL_BIN=""
+    find_openssl_sha512() {
+        local candidates=()
+        # Homebrew (preferred on macOS)
+        if command -v brew >/dev/null 2>&1; then
+            local prefix=""
+            prefix=$(brew --prefix openssl@3 2>/dev/null || true)
+            if [[ -n "$prefix" && -x "$prefix/bin/openssl" ]]; then candidates+=("$prefix/bin/openssl"); fi
+            prefix=$(brew --prefix openssl@1.1 2>/dev/null || true)
+            if [[ -n "$prefix" && -x "$prefix/bin/openssl" ]]; then candidates+=("$prefix/bin/openssl"); fi
+            prefix=$(brew --prefix openssl 2>/dev/null || true)
+            if [[ -n "$prefix" && -x "$prefix/bin/openssl" ]]; then candidates+=("$prefix/bin/openssl"); fi
+        fi
+        # Common locations
+        candidates+=("/opt/homebrew/opt/openssl@3/bin/openssl" "/usr/local/opt/openssl@3/bin/openssl" "/opt/homebrew/bin/openssl" "/usr/local/bin/openssl")
+        # Whatever is on PATH last (may be LibreSSL)
+        if command -v openssl >/dev/null 2>&1; then candidates+=("$(command -v openssl)"); fi
+        local bin=""
+        for bin in "${candidates[@]}"; do
+            [[ -n "$bin" && -x "$bin" ]] || continue
+            if "$bin" passwd -6 "test" >/dev/null 2>&1; then
+                echo "$bin"
+                return 0
+            fi
+        done
+        return 1
+    }
+    
+    if OPENSSL_BIN="$(find_openssl_sha512 2>/dev/null)"; then
+        # Guard command substitution so failure doesn't abort the script.
+        if PASSWORD_HASH=$("$OPENSSL_BIN" passwd -6 -stdin 2>/dev/null <<<"$USER_PASSWORD"); then
+            echo -e "${GREEN}✓ Password hash generated (via OpenSSL: $OPENSSL_BIN)${NC}"
         else
             PASSWORD_HASH=""
         fi
@@ -524,16 +654,48 @@ PYEOF
         fi
     fi
     
-    # Check if we got a valid hash
+    # Validate hash (must be SHA-512 crypt: $6$salt$hash)
+    # Avoid regex here: bash escaping differs across environments and it's easy to get wrong.
+    if [[ -n "$PASSWORD_HASH" ]]; then
+        if [[ "$PASSWORD_HASH" == \$6\$* ]]; then
+            # Parameter expansion patterns are globs, not regex.
+            # Use \$ to represent a literal '$' in the glob patterns.
+            REST="${PASSWORD_HASH#\$6\$}"
+            SALT="${REST%%\$*}"
+            HASH="${REST#*\$}"
+            if [[ -z "$SALT" || "$REST" != *\$* || -z "$HASH" ]]; then
+                echo -e "${YELLOW}⚠ Generated password hash is not in expected SHA-512 crypt format. Discarding.${NC}"
+                PASSWORD_HASH=""
+            fi
+        else
+            echo -e "${YELLOW}⚠ Generated password hash is not in expected SHA-512 crypt format. Discarding.${NC}"
+            PASSWORD_HASH=""
+        fi
+    fi
+    
     if [ -z "$PASSWORD_HASH" ]; then
-        echo -e "${RED}Error: Failed to generate password hash${NC}"
-        echo -e "${RED}Neither openssl nor Python crypt module are available.${NC}"
+        echo -e "${RED}Error: Failed to generate a valid SHA-512 password hash for userconf.txt${NC}"
         echo ""
-        echo "Please install openssl:"
-        echo "  brew install openssl"
+        echo "On macOS, the system OpenSSL is usually LibreSSL and can't generate '-6' hashes."
+        echo "Fix:"
+        echo "  brew install openssl@3"
+        echo ""
+        echo "Then re-run this script to recreate the SD card."
+        echo ""
+        echo "Alternative:"
+        echo "  Use setup method 2 (Raspberry Pi Imager) which sets the password for you."
         echo ""
         exit 1
     fi
+
+    # Extra safety: write userconf.txt onto the boot partition.
+    # Raspberry Pi OS will consume this on first boot to set username/password,
+    # even if our firstrun.sh mechanism doesn't execute for any reason.
+    echo -e "${YELLOW}Writing user password config to boot partition (userconf.txt fallback)...${NC}"
+    printf '%s:%s\n' "$USERNAME" "$PASSWORD_HASH" > "$BOOT_VOLUME/userconf.txt"
+    chmod 600 "$BOOT_VOLUME/userconf.txt" 2>/dev/null || true
+    echo -e "${GREEN}✓ userconf.txt written${NC}"
+    echo ""
     
     # Create firstrun.sh script (matches Raspberry Pi Imager approach)
     echo -e "${YELLOW}Creating firstrun.sh script...${NC}"
@@ -547,6 +709,13 @@ set +e
 BOOT_MNT="/boot"
 if [ -d "/boot/firmware" ]; then
   BOOT_MNT="/boot/firmware"
+fi
+
+# Enable SPI for the e-ink display (safe to do even if already enabled)
+if [ -f "$BOOT_MNT/config.txt" ]; then
+  if ! grep -q '^dtparam=spi=on' "$BOOT_MNT/config.txt" 2>/dev/null; then
+    echo 'dtparam=spi=on' >> "$BOOT_MNT/config.txt"
+  fi
 fi
 
 CURRENT_HOSTNAME=$(cat /etc/hostname | tr -d " \t\n\r")
@@ -604,11 +773,12 @@ WPAEOF
    done
 fi
 
-# Create a second-boot service to install Avahi after network is fully online
+# Create a second-boot service to install Avahi + e-ink deps after network is fully online,
+# then show "Ready to deploy" on the e-ink display.
 # This is the Bookworm-safe pattern - don't install packages in firstrun.sh
 cat > /etc/systemd/system/ovbuddy-postboot.service << 'POSTBOOTEOF'
 [Unit]
-Description=OVBuddy Post-Boot Setup (Install Avahi)
+Description=OVBuddy Post-Boot Setup (Install Avahi + e-ink deps)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=!/etc/ovbuddy-postboot-done
@@ -617,9 +787,11 @@ ConditionPathExists=!/etc/ovbuddy-postboot-done
 Type=oneshot
 ExecStartPre=/bin/sleep 10
 ExecStart=/usr/bin/apt-get update -qq
-ExecStart=/usr/bin/apt-get install -y avahi-daemon
+ExecStart=/usr/bin/apt-get install -y avahi-daemon python3-pil python3-numpy python3-gpiozero python3-spidev python3-rpi.gpio
 ExecStart=/bin/systemctl enable avahi-daemon
 ExecStart=/bin/systemctl start avahi-daemon
+# Best-effort: show an on-screen "ready" signal; never block boot on display errors.
+ExecStart=/bin/bash -lc 'BOOT_MNT=/boot; [ -d /boot/firmware ] && BOOT_MNT=/boot/firmware; if [ -f "$BOOT_MNT/ovbuddy_eink/ovbuddy_eink_ready.py" ]; then PYTHONPATH="$BOOT_MNT/ovbuddy_eink" /usr/bin/python3 "$BOOT_MNT/ovbuddy_eink/ovbuddy_eink_ready.py" || true; fi'
 ExecStart=/bin/touch /etc/ovbuddy-postboot-done
 RemainAfterExit=yes
 
@@ -661,10 +833,11 @@ FIRSTRUN_EOF
     echo -e "${GREEN}✓ firstrun.sh created and verified${NC}"
     
     # Modify cmdline.txt to add systemd.run parameter.
-    # IMPORTANT: Bookworm often mounts firmware at /boot/firmware, so systemd.run must point there.
+    # IMPORTANT: Use /boot/firstrun.sh for systemd.run.
+    # /boot is the most compatible path across Pi OS variants/boot stages; on Bookworm,
+    # /boot is typically a compatibility mount/symlink to /boot/firmware.
     echo -e "${YELLOW}Configuring boot parameters...${NC}"
-    # Prefer /boot/firmware path on modern images; older images may still use /boot.
-    RUN_PATH="/boot/firmware/firstrun.sh"
+    RUN_PATH="/boot/firstrun.sh"
     if ! grep -q "systemd.run=" "$BOOT_VOLUME/cmdline.txt"; then
         # Add systemd.run parameters to cmdline.txt
         CMDLINE=$(cat "$BOOT_VOLUME/cmdline.txt")
@@ -678,7 +851,26 @@ FIRSTRUN_EOF
     echo ""
     echo -e "${YELLOW}Syncing and ejecting SD card...${NC}"
     sync
-    diskutil eject "$DISK_PATH"
+    
+    # Spotlight (mds) can briefly hold the boot volume open right after writes, causing
+    # "Unmount was dissented" even though the card is actually ready. Retry and fall back
+    # to a warning instead of failing the whole run.
+    EJECT_OK=false
+    for attempt in 1 2 3 4 5; do
+        if diskutil eject "$DISK_PATH" > /dev/null 2>&1; then
+            EJECT_OK=true
+            break
+        fi
+        sleep 1
+    done
+    
+    if [ "$EJECT_OK" != true ]; then
+        echo -e "${YELLOW}⚠ Could not eject $DISK_ID (macOS is holding the volume open).${NC}"
+        echo -e "${YELLOW}  This is usually safe to ignore because data has been synced, but please eject manually:${NC}"
+        echo "    diskutil unmountDisk force \"$DISK_PATH\" || true"
+        echo "    diskutil eject \"$DISK_PATH\""
+        echo ""
+    fi
     
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
@@ -701,6 +893,8 @@ FIRSTRUN_EOF
     echo "   Second boot (2-3 minutes):"
     echo "   - Connect to WiFi"
     echo "   - Install Avahi (mDNS for .local hostname)"
+    echo "   - Install e-ink prerequisites + enable SPI"
+    echo "   - Show 'Ready to deploy' on the e-ink display"
     echo ""
     echo "   Total time: ~5-6 minutes from first power-on"
     echo ""

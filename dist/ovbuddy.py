@@ -79,11 +79,11 @@ DEFAULT_CONFIG = {
     "flip_display": False,
     "use_partial_refresh": False,
     "update_repository_url": "https://github.com/tenineight/OVBuddy",
-    "auto_update": True,
+    "auto_update": False,
     "ap_fallback_enabled": True,
     "ap_ssid": "OVBuddy",
-    "ap_password": "",
-    "display_ap_password": False
+    "ap_password": "password",
+    "display_ap_password": True
 }
 
 # Configuration variables (will be loaded from config.json)

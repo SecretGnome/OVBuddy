@@ -13,6 +13,7 @@
   "update_repository_url": "https://github.com/SecretGnome/OVBuddy",
   "ap_fallback_enabled": true,
   "ap_ssid": "OVBuddy",
+  "auto_update": "false",
   "ap_password": "password",
   "display_ap_password": true
 }
