@@ -29,34 +29,14 @@ OVBuddy is a Swiss public transport departure display for Raspberry Pi with e-in
 
 ### 1. Prepare the SD Card
 
-Use the provided setup script to prepare an SD card with Raspberry Pi OS Lite:
+Use **Raspberry Pi Imager** (GUI). Full step-by-step instructions:
+- `doc/SD_CARD_SETUP.md`
 
-```bash
-cd scripts
-./setup-sd-card.sh
-```
-
-This will guide you through:
-- Installing Raspberry Pi OS Lite (32-bit, Legacy)
-- Configuring WiFi and SSH
-- Setting hostname and credentials
-
-**Automated Setup (Optional):**
-
-To skip manual prompts, create a `setup.env` file in the project root:
-
-```bash
-cp setup.env.example setup.env
-# Edit setup.env with your WiFi credentials and preferences
-```
-
-Then run the setup script - it will automatically use your configuration
-
-**Manual Setup:**
+**Quick version:**
 1. Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
 2. Choose **Raspberry Pi Zero W** as device
-3. Choose **Raspberry Pi OS Lite (32-bit, Legacy)** as OS
-4. Configure settings (hostname: `ovbuddy`, enable SSH, WiFi credentials)
+3. Choose **Raspberry Pi OS (Legacy, 32-bit) Lite** as OS
+4. Configure settings (hostname: `ovbuddy`, enable SSH, WiFi credentials, WiFi country)
 5. Write to SD card
 
 ### 2. Configure Connection
@@ -86,14 +66,18 @@ This will:
 - `-main`: Deploy only `ovbuddy.py` (for quick iterations)
 - `-reboot`: Reboot after deployment and verify services are running
 
-### 4. Setup Passwordless Sudo (Optional but Recommended)
+### 4. Setup Passwordless Sudo (Required)
+
+`./scripts/deploy.sh` will attempt to configure passwordless sudo automatically during deployment.
+
+If deployment couldn’t apply it (or you want to apply it explicitly), run:
 
 ```bash
 cd scripts
 ./setup-passwordless-sudo.sh
 ```
 
-This allows the web interface to manage WiFi and services without password prompts.
+This is required for the web interface to manage WiFi and services without password prompts.
 
 ## Configuration
 
@@ -112,7 +96,7 @@ Or scan the QR code displayed on the e-ink screen during startup.
 - 📶 WiFi network scanning and connection
 - 📊 Real-time status updates
 
-See [WEB_INTERFACE.md](dist/WEB_INTERFACE.md) for detailed documentation, [WIFI_SETUP.md](WIFI_SETUP.md) for WiFi troubleshooting, [WIFI_AP_FALLBACK.md](WIFI_AP_FALLBACK.md) for access point fallback setup, and [demo.html](demo.html) for a visual preview.
+The web interface runs on the Pi at port `8080` (deployed via `./scripts/deploy.sh`).
 
 ### Configuration Options
 
@@ -147,6 +131,7 @@ OVBuddy/
 │   ├── ovbuddy_web.py        # Web server application
 │   ├── ovbuddy.service       # Display systemd service
 │   ├── ovbuddy-web.service   # Web server systemd service
+│   ├── ovbuddy-wifi.service  # WiFi monitor systemd service
 │   ├── templates/            # HTML templates
 │   │   └── index.html        # Main web interface template
 │   ├── static/               # Static web assets
@@ -159,116 +144,32 @@ OVBuddy/
 │   ├── epd2in13_V4.py        # E-ink display driver
 │   ├── epdconfig.py          # Display configuration
 │   ├── test_templates.py     # Template testing script
-│   └── WEB_INTERFACE.md      # Web interface documentation
 ├── scripts/                   # Deployment and utility scripts
 │   ├── deploy.sh             # Main deployment script
-│   ├── setup-sd-card.sh      # SD card setup helper
 │   ├── setup-passwordless-sudo.sh  # Sudo configuration
 │   ├── restart-service.sh    # Restart services
 │   ├── stop-service.sh       # Stop services
-│   └── display-image.sh      # Display custom images
+│   ├── trigger-refresh.sh    # Ask the running service to refresh soon
+│   └── find-pi.sh            # Locate the Pi on your LAN
 ├── assets/                    # Images and resources
-├── demo.html                  # Web interface theme demo
-├── CHANGES.md                 # Recent changes documentation
-├── THEME_PREVIEW.md           # Theme customization guide
-└── WIFI_SETUP.md              # WiFi network switching guide
+└── doc/                       # Documentation (setup, troubleshooting, etc.)
 ```
 
 ## Troubleshooting
 
-### Can't SSH into Raspberry Pi
+### Find the Pi / network issues
 
-If you can reach the Pi via `ovbuddy.local` (ping works) but SSH authentication fails with "Permission denied":
-
-**Quick Test:**
-```bash
-cd scripts
-./test-ssh.sh
-```
-
-This diagnostic script will test:
-- Network connectivity
-- mDNS resolution
-- SSH port accessibility
-- SSH authentication (both key and password)
-
-**Common Causes:**
-1. **Password hash issue**: The password may not have been set correctly during SD card setup
-2. **Wrong password**: Double-check your password in `setup.env`
-3. **First boot not complete**: Wait 3-5 minutes after first power-on (includes auto-reboot)
-
-**Solutions:**
-
-**Option A: Recreate SD Card (Recommended)**
-```bash
-cd scripts
-./setup-sd-card.sh
-```
-
-The updated script now uses OpenSSL for more reliable password hash generation.
-
-**Option B: Manual Password Reset**
-
-If you have a monitor and keyboard:
-1. Connect them to the Pi
-2. Log in at the console
-3. Run: `passwd`
-4. Set a new password
-
-**Option C: Use SSH Keys**
-
-Set up key-based authentication instead:
-```bash
-ssh-keygen -t ed25519
-ssh-copy-id pi@ovbuddy.local
-```
-
-See [SSH_PASSWORD_FIX.md](doc/SSH_PASSWORD_FIX.md) for detailed troubleshooting.
-
-### Force AP Mode Not Working
-
-If the "Force AP Mode" button doesn't work or the device reconnects to known WiFi instead of entering AP mode, run the diagnostic script:
+- Try: `ping ovbuddy.local`
+- Or run:
 
 ```bash
-cd scripts
-./diagnose-force-ap.sh
+./scripts/find-pi.sh
 ```
 
-This will check:
-- WiFi manager type (NetworkManager vs wpa_supplicant)
-- Current WiFi connection status
-- Auto-connect settings for configured networks
-- Force AP flag status
-- wifi-monitor service status
-- Whether device is in AP mode
+If you suspect an SD-card / first-boot problem, see:
+- `doc/SD_CARD_TROUBLESHOOTING.md`
 
-**Common Issue: Device Reconnects to WiFi After Reboot**
-
-This happens when auto-reconnect is not properly disabled. The fix:
-1. Redeploy with the updated scripts: `./scripts/deploy.sh`
-2. The updated `force-ap-mode.sh` now disables auto-connect before rebooting
-3. This prevents the device from reconnecting to known networks
-4. wifi-monitor can then properly enter AP mode
-
-See [FORCE_AP_FIX_AUTOCONNECT.md](doc/FORCE_AP_FIX_AUTOCONNECT.md) for technical details and [FORCE_AP_TROUBLESHOOTING.md](doc/FORCE_AP_TROUBLESHOOTING.md) for detailed troubleshooting.
-
-### Services don't start on boot
-
-If services don't start automatically after reboot, use the diagnostic script:
-
-```bash
-cd scripts
-./fix-boot-services.sh
-```
-
-This will check and fix:
-- avahi-daemon (Bonjour/mDNS)
-- ovbuddy-wifi (WiFi monitor)
-- ovbuddy and ovbuddy-web services
-
-See [BOOT_SERVICES.md](BOOT_SERVICES.md) for detailed troubleshooting.
-
-### Service won't start
+### Service won’t start (on the Pi)
 
 Check service status:
 ```bash
@@ -312,18 +213,6 @@ cd scripts
 
 This will automatically apply all fixes.
 
-**Alternative (fix only, no full deployment):**
-```bash
-cd scripts
-./fix-avahi-boot.sh
-```
-
-This script will:
-- Ensure avahi-daemon is installed and enabled
-- Unmask avahi-daemon (in case it was masked)
-- Update the fix-bonjour service with better boot handling
-- Start avahi-daemon if it's not running
-
 **Manual Fix on Pi:**
 ```bash
 ssh pi@[pi-ip-address]
@@ -354,38 +243,7 @@ ping ovbuddy.local
 ssh pi@ovbuddy.local
 ```
 
-### Web interface shutdown/restart commands timeout
-
-If the "Shutdown & Clear Display" button or service control commands timeout after fixing the avahi-daemon boot issue, this is caused by systemctl blocking.
-
-**Quick Fix (just redeploy):**
-```bash
-cd scripts
-./deploy.sh
-```
-
-This will automatically update the fix-bonjour script with the `--no-block` fix.
-
-**Alternative (fix only, no full deployment):**
-```bash
-cd scripts
-./fix-shutdown-timeout.sh
-```
-
-**What causes this:**
-- The fix-bonjour service manages avahi-daemon during boot
-- Without `--no-block`, systemctl commands wait for services to fully start
-- This creates deadlocks when multiple systemctl commands run simultaneously
-- Web interface commands timeout (10 second limit)
-
-**After applying the fix:**
-- systemctl commands return immediately
-- No more timeouts or deadlocks
-- Web interface works reliably
-
 ### WiFi not working
-
-**See [WIFI_SETUP.md](WIFI_SETUP.md) for comprehensive WiFi troubleshooting.**
 
 Quick checks:
 1. Check WiFi status via web interface
@@ -399,8 +257,6 @@ Quick checks:
 ### Can't connect to configured WiFi
 
 **WiFi Access Point Fallback** is automatically enabled when you deploy OVBuddy. When the configured WiFi network is unavailable, the device will automatically create its own access point.
-
-See [WIFI_AP_FALLBACK.md](WIFI_AP_FALLBACK.md) for detailed information.
 
 **How it works:**
 1. Device tries to connect to configured WiFi
@@ -475,10 +331,7 @@ You can combine flags:
 
 ### Display Custom Images
 
-```bash
-cd scripts
-./display-image.sh path/to/image.jpg
-```
+Use `dist/display_image.py` on the Pi (it is deployed into `/home/pi/ovbuddy/`).
 
 ## Technical Details
 
