@@ -1,0 +1,819 @@
+#!/bin/bash
+
+# Script to setup an SD card with Raspberry Pi OS Lite for OVBuddy
+# This script helps prepare an SD card for Raspberry Pi Zero W 1.1
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║          OVBuddy SD Card Setup Helper                      ║${NC}"
+echo -e "${BLUE}║     For Raspberry Pi Zero W 1.1 with RPi OS Lite          ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# Check if running on macOS
+if [[ "$OSTYPE" != "darwin"* ]]; then
+    echo -e "${YELLOW}Warning: This script is designed for macOS.${NC}"
+    echo "For other operating systems, please follow the manual instructions."
+    echo ""
+fi
+
+echo -e "${YELLOW}This script will help you set up an SD card for OVBuddy.${NC}"
+echo ""
+echo "Requirements:"
+echo "  - SD card (8GB or larger recommended)"
+echo "  - WiFi network credentials"
+echo ""
+
+# Check for setup.env file
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SETUP_ENV="$PROJECT_ROOT/setup.env"
+
+if [[ -f "$SETUP_ENV" ]]; then
+    echo -e "${GREEN}Found setup.env file. Loading configuration...${NC}"
+    source "$SETUP_ENV"
+    echo -e "${GREEN}✓ Configuration loaded${NC}"
+    echo ""
+    
+    # Validate required variables
+    if [[ -z "$WIFI_SSID" || -z "$WIFI_PASSWORD" || -z "$WIFI_COUNTRY" ]]; then
+        echo -e "${RED}Error: setup.env is missing required WiFi configuration.${NC}"
+        echo "Please ensure WIFI_SSID, WIFI_PASSWORD, and WIFI_COUNTRY are set."
+        exit 1
+    fi
+    
+    # Set defaults for optional variables
+    HOSTNAME=${HOSTNAME:-ovbuddy}
+    USERNAME=${USERNAME:-pi}
+    USER_PASSWORD=${USER_PASSWORD:-raspberry}
+    
+    # Default to automated CLI when using setup.env
+    SETUP_METHOD="1"
+    
+    echo -e "${BLUE}Configuration from setup.env:${NC}"
+    echo "  WiFi SSID: $WIFI_SSID"
+    echo "  WiFi Password: [hidden]"
+    echo "  WiFi Country: $WIFI_COUNTRY"
+    echo "  Hostname: $HOSTNAME"
+    echo "  Username: $USERNAME"
+    echo "  User Password: [hidden]"
+    echo ""
+    
+    read -p "Continue with these settings? (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 1
+    fi
+    echo ""
+else
+    # Prompt for setup method
+    echo -e "${BLUE}Choose setup method:${NC}"
+    echo "  1. Automated CLI (downloads and writes image automatically)"
+    echo "  2. Manual GUI (opens Raspberry Pi Imager with instructions)"
+    echo ""
+    read -p "Enter choice (1 or 2): " SETUP_METHOD
+    echo ""
+    
+    if [[ "$SETUP_METHOD" != "1" && "$SETUP_METHOD" != "2" ]]; then
+        echo -e "${RED}Invalid choice. Exiting.${NC}"
+        exit 1
+    fi
+    
+    # Prompt for WiFi credentials
+    echo -e "${YELLOW}Please enter your configuration:${NC}"
+    read -p "WiFi SSID: " WIFI_SSID
+    read -sp "WiFi Password: " WIFI_PASSWORD
+    echo ""
+    echo ""
+    
+    # Prompt for WiFi country code
+    read -p "WiFi Country Code (e.g., US, GB, CH): " WIFI_COUNTRY
+    WIFI_COUNTRY=${WIFI_COUNTRY:-US}
+    echo ""
+    
+    # Prompt for hostname
+    read -p "Hostname (default: ovbuddy): " HOSTNAME
+    HOSTNAME=${HOSTNAME:-ovbuddy}
+    echo ""
+    
+    # Prompt for username
+    read -p "Username (default: pi): " USERNAME
+    USERNAME=${USERNAME:-pi}
+    echo ""
+    
+    # Prompt for password
+    read -sp "User Password: " USER_PASSWORD
+    echo ""
+    echo ""
+fi
+
+# Only show confirmation if not already shown for setup.env
+if [[ ! -f "$SETUP_ENV" ]]; then
+    echo -e "${BLUE}Configuration Summary:${NC}"
+    echo "  Hostname: $HOSTNAME"
+    echo "  Username: $USERNAME"
+    echo "  User Password: [hidden]"
+    echo "  WiFi SSID: $WIFI_SSID"
+    echo "  WiFi Password: [hidden]"
+    echo "  WiFi Country: $WIFI_COUNTRY"
+    echo ""
+    
+    read -p "Continue with these settings? (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 1
+    fi
+    echo ""
+fi
+
+# ============================================================================
+# AUTOMATED CLI METHOD
+# ============================================================================
+if [[ "$SETUP_METHOD" == "1" ]]; then
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  AUTOMATED CLI SETUP${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    # Check for required tools
+    if ! command -v curl &> /dev/null; then
+        echo -e "${RED}Error: curl is required but not installed.${NC}"
+        exit 1
+    fi
+
+    # List available disks
+    echo -e "${YELLOW}Available disks:${NC}"
+    diskutil list
+    echo ""
+    
+    read -p "Enter the disk identifier (e.g., disk2): " DISK_ID
+    
+    if [[ ! "$DISK_ID" =~ ^disk[0-9]+$ ]]; then
+        echo -e "${RED}Error: Invalid disk identifier. Must be in format 'diskN'.${NC}"
+        exit 1
+    fi
+    
+    # Use /dev/diskN for diskutil operations, but prefer /dev/rdiskN (raw device)
+    # for dd writes on macOS — it's *much* faster.
+    DISK_PATH="/dev/$DISK_ID"
+    RAW_DISK_PATH="/dev/r$DISK_ID"
+    WRITE_DISK_PATH="$DISK_PATH"
+    if [[ -e "$RAW_DISK_PATH" ]]; then
+        WRITE_DISK_PATH="$RAW_DISK_PATH"
+    fi
+    
+    # Confirm disk selection
+    echo ""
+    echo -e "${RED}WARNING: This will erase ALL data on $DISK_ID!${NC}"
+    diskutil info "$DISK_ID" | grep -E "Device Node|Media Name|Total Size"
+    echo ""
+    read -p "Are you ABSOLUTELY sure you want to continue? Type 'YES' to proceed: " CONFIRM
+    
+    if [[ "$CONFIRM" != "YES" ]]; then
+        echo "Aborted."
+        exit 1
+    fi
+    
+    # Create temporary directory
+    TEMP_DIR=$(mktemp -d)
+    
+    # Cleanup function
+    cleanup() {
+        local exit_code=$?
+        if [ -d "$TEMP_DIR" ]; then
+            echo ""
+            echo -e "${YELLOW}Cleaning up temporary files...${NC}"
+            rm -rf "$TEMP_DIR"
+        fi
+        if [ $exit_code -ne 0 ]; then
+            echo -e "${RED}Script failed with exit code $exit_code${NC}"
+        fi
+    }
+    
+    # Set trap for cleanup on exit, interrupt, or error
+    trap cleanup EXIT INT TERM
+    
+    # Raspberry Pi OS (Legacy, 32-bit) Lite - Debian Bookworm
+    # Release: 24 Nov 2025 - Compatible with Pi Zero W
+    # Source: https://www.raspberrypi.com/software/operating-systems/
+    # Official SHA256: 2a6ff6474218e5e83b6448771e902a4e5e06a86b9604b3b02f8d69ccc5bfb47b
+    IMAGE_URL="https://downloads.raspberrypi.com/raspios_oldstable_lite_armhf_latest"
+    IMAGE_FILE="$TEMP_DIR/raspios.img.xz"
+    IMAGE_SHA256="2a6ff6474218e5e83b6448771e902a4e5e06a86b9604b3b02f8d69ccc5bfb47b"
+    
+    echo ""
+    echo -e "${YELLOW}Downloading Raspberry Pi OS Lite (32-bit)...${NC}"
+    echo "Release: Debian Bookworm (configured for Pi Zero W compatibility)"
+    echo "This may take several minutes depending on your connection."
+    echo ""
+    
+    if ! curl -L -o "$IMAGE_FILE" --progress-bar "$IMAGE_URL"; then
+        echo -e "${RED}Error: Failed to download image.${NC}"
+        exit 1
+    fi
+    
+    echo ""
+    echo -e "${GREEN}✓ Download complete${NC}"
+    echo ""
+    
+    # Get uncompressed size for progress bar (not for validation - hash check is sufficient)
+    # xz -l outputs format like: "4,567.8 MiB" - fields 5 and 6 contain number and unit
+    UNCOMPRESSED_BYTES=""
+    if command -v xz &> /dev/null; then
+        XZ_INFO=$(xz -l "$IMAGE_FILE" 2>/dev/null | tail -1)
+        if [[ -n "$XZ_INFO" ]]; then
+            # Extract number (field 5) and unit (field 6), remove commas
+            UNCOMPRESSED_NUM=$(echo "$XZ_INFO" | awk '{print $5}' | sed 's/,//g')
+            UNCOMPRESSED_UNIT=$(echo "$XZ_INFO" | awk '{print $6}')
+            if [[ -n "$UNCOMPRESSED_NUM" && -n "$UNCOMPRESSED_UNIT" ]]; then
+                # Convert to bytes using awk (works without bc)
+                case "$UNCOMPRESSED_UNIT" in
+                    *[Kk][Ii]*[Bb]*) 
+                        UNCOMPRESSED_BYTES=$(awk "BEGIN {printf \"%.0f\", $UNCOMPRESSED_NUM * 1024}")
+                        ;;
+                    *[Mm][Ii]*[Bb]*) 
+                        UNCOMPRESSED_BYTES=$(awk "BEGIN {printf \"%.0f\", $UNCOMPRESSED_NUM * 1024 * 1024}")
+                        ;;
+                    *[Gg][Ii]*[Bb]*) 
+                        UNCOMPRESSED_BYTES=$(awk "BEGIN {printf \"%.0f\", $UNCOMPRESSED_NUM * 1024 * 1024 * 1024}")
+                        ;;
+                    *[Tt][Ii]*[Bb]*) 
+                        UNCOMPRESSED_BYTES=$(awk "BEGIN {printf \"%.0f\", $UNCOMPRESSED_NUM * 1024 * 1024 * 1024 * 1024}")
+                        ;;
+                    *) 
+                        UNCOMPRESSED_BYTES=$(awk "BEGIN {printf \"%.0f\", $UNCOMPRESSED_NUM}")
+                        ;;
+                esac
+            fi
+        fi
+    fi
+    
+    # Verify SHA256 checksum
+    echo -e "${YELLOW}Verifying image integrity...${NC}"
+    if command -v shasum &> /dev/null; then
+        DOWNLOADED_SHA256=$(shasum -a 256 "$IMAGE_FILE" | awk '{print $1}')
+    elif command -v sha256sum &> /dev/null; then
+        DOWNLOADED_SHA256=$(sha256sum "$IMAGE_FILE" | awk '{print $1}')
+    else
+        echo -e "${YELLOW}Warning: Neither shasum nor sha256sum found. Skipping checksum verification.${NC}"
+        DOWNLOADED_SHA256="$IMAGE_SHA256"
+    fi
+    
+    if [[ "$DOWNLOADED_SHA256" != "$IMAGE_SHA256" ]]; then
+        echo -e "${RED}Error: SHA256 checksum mismatch!${NC}"
+        echo "Expected: $IMAGE_SHA256"
+        echo "Got:      $DOWNLOADED_SHA256"
+        echo ""
+        echo "The downloaded file may be corrupted. Please try again."
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Image integrity verified${NC}"
+    echo ""
+    
+    # Unmount the disk (but don't eject it)
+    echo -e "${YELLOW}Unmounting disk...${NC}"
+    diskutil unmountDisk "$DISK_PATH" || true
+    
+    # Write the image
+    echo ""
+    echo -e "${YELLOW}Writing image to SD card...${NC}"
+    echo "This will take several minutes. Please be patient."
+    if [[ "$WRITE_DISK_PATH" == "$RAW_DISK_PATH" ]]; then
+        echo -e "${BLUE}Using raw device for speed: $WRITE_DISK_PATH${NC}"
+    else
+        echo -e "${YELLOW}Using buffered device (slower): $WRITE_DISK_PATH${NC}"
+        echo -e "${YELLOW}Tip: if /dev/rdisk* exists on your system, it will be used automatically for faster writes.${NC}"
+    fi
+    echo ""
+    
+    # Check if pv (pipe viewer) is available for progress bar
+    USE_PV=false
+    if command -v pv &> /dev/null && [[ -n "$UNCOMPRESSED_BYTES" && "$UNCOMPRESSED_BYTES" -gt 0 ]]; then
+        USE_PV=true
+        echo -e "${BLUE}Using progress bar...${NC}"
+    fi
+    
+    # Calculate expected max bytes (uncompressed size + 10% tolerance)
+    if [[ -n "$UNCOMPRESSED_BYTES" && "$UNCOMPRESSED_BYTES" -gt 0 ]]; then
+        MAX_EXPECTED_BYTES=$((UNCOMPRESSED_BYTES + UNCOMPRESSED_BYTES / 10))
+        # Safety limit: abort if writing more than 10GB (way too much)
+        ABSOLUTE_MAX_BYTES=10000000000
+    else
+        # Fallback: expect max 6GB if we couldn't determine size
+        MAX_EXPECTED_BYTES=6000000000
+        ABSOLUTE_MAX_BYTES=10000000000
+    fi
+    
+    # Use xzcat (single-threaded) - often faster than multi-threaded for streaming
+    # Performance notes on macOS:
+    # - Writing to /dev/rdiskN is critical (raw device)
+    # - Buffering matters: without buffering, pipes can cause many small writes and be extremely slow
+    # We therefore use pv's buffer (-B) and a larger dd block size.
+    # Capture dd output to check if write was successful (even if exit code is non-zero)
+    # "end of device" warning is normal when image is slightly larger than card
+    if [ "$USE_PV" = true ]; then
+        # Use a temporary file to capture dd output while letting pv show progress
+        TEMP_DD_OUTPUT=$(mktemp)
+        sudo sh -c "xzcat '$IMAGE_FILE' | pv -B 16m -s $UNCOMPRESSED_BYTES -p -t -e -b | dd of='$WRITE_DISK_PATH' bs=16m 2>$TEMP_DD_OUTPUT" || true
+        DD_OUTPUT=$(cat "$TEMP_DD_OUTPUT")
+        rm -f "$TEMP_DD_OUTPUT"
+    else
+        DD_OUTPUT=$(sudo sh -c "xzcat '$IMAGE_FILE' | dd of='$WRITE_DISK_PATH' bs=16m 2>&1" || true)
+    fi
+    
+    # Check if dd actually wrote data successfully
+    # Look for "bytes transferred" in the output (indicates successful write)
+    if echo "$DD_OUTPUT" | grep -q "bytes transferred"; then
+        # Extract bytes written from dd output (format: "N bytes transferred in X secs")
+        BYTES_WRITTEN=$(echo "$DD_OUTPUT" | grep "bytes transferred" | sed -E 's/([0-9]+) bytes transferred.*/\1/' | tail -1)
+        
+        if [[ -z "$BYTES_WRITTEN" ]]; then
+            echo -e "${RED}Error: Could not determine bytes written from dd output${NC}"
+            echo "$DD_OUTPUT"
+            exit 1
+        fi
+        
+        # Safety check: abort if writing way too much (indicates corruption or wrong file)
+        if [[ "$BYTES_WRITTEN" -gt "$ABSOLUTE_MAX_BYTES" ]]; then
+            echo -e "${RED}Error: Write aborted - too much data written (${BYTES_WRITTEN} bytes = ~$((BYTES_WRITTEN / 1000000000))GB)${NC}"
+            echo -e "${RED}Expected maximum: ~$((MAX_EXPECTED_BYTES / 1000000000))GB${NC}"
+            echo ""
+            echo "This suggests the image file may be corrupted or the wrong file was downloaded."
+            echo "Please check the downloaded file and try again."
+            echo ""
+            echo "$DD_OUTPUT"
+            exit 1
+        fi
+        
+        # Check if reasonable amount was written
+        if [[ "$BYTES_WRITTEN" -lt 1000000 ]]; then
+            echo -e "${RED}Error: Write appears to have failed (insufficient bytes written: ${BYTES_WRITTEN})${NC}"
+            echo "$DD_OUTPUT"
+            exit 1
+        fi
+        
+        # Warn if more than expected (but less than absolute max)
+        if [[ -n "$MAX_EXPECTED_BYTES" && "$BYTES_WRITTEN" -gt "$MAX_EXPECTED_BYTES" ]]; then
+            echo -e "${YELLOW}Warning: More bytes written than expected (${BYTES_WRITTEN} vs expected ~${UNCOMPRESSED_BYTES})${NC}"
+            echo -e "${YELLOW}This may indicate an issue, but continuing...${NC}"
+        fi
+        
+        echo ""
+        echo -e "${GREEN}✓ Image written successfully (${BYTES_WRITTEN} bytes = ~$((BYTES_WRITTEN / 1000000000))GB)${NC}"
+        if echo "$DD_OUTPUT" | grep -q "end of device"; then
+            echo -e "${YELLOW}  Note: 'end of device' warning is normal when image is slightly larger than SD card${NC}"
+        fi
+    else
+        echo -e "${RED}Error: Failed to write image.${NC}"
+        echo "$DD_OUTPUT"
+        exit 1
+    fi
+    
+    echo ""
+    
+    # Sync to ensure all data is written
+    echo -e "${YELLOW}Syncing data...${NC}"
+    sync
+    sleep 2
+    
+    # Now mount the disk partitions (this will read the new partition table)
+    echo -e "${YELLOW}Mounting disk partitions...${NC}"
+    diskutil mountDisk "$DISK_PATH"
+    sleep 3
+    
+    # Find the boot partition - try multiple possible names
+    BOOT_VOLUME=""
+    for vol_name in "bootfs" "boot" "BOOT"; do
+        if [[ -d "/Volumes/$vol_name" ]]; then
+            BOOT_VOLUME="/Volumes/$vol_name"
+            break
+        fi
+    done
+    
+    # If still not found, try mounting the first partition explicitly
+    if [[ -z "$BOOT_VOLUME" ]]; then
+        echo -e "${YELLOW}Boot partition not automatically mounted. Trying to mount manually...${NC}"
+        diskutil mount "${DISK_ID}s1" 2>/dev/null || true
+        sleep 2
+        
+        # Check again for all possible names
+        for vol_name in "bootfs" "boot" "BOOT"; do
+            if [[ -d "/Volumes/$vol_name" ]]; then
+                BOOT_VOLUME="/Volumes/$vol_name"
+                break
+            fi
+        done
+    fi
+    
+    # Final check
+    if [[ -z "$BOOT_VOLUME" ]]; then
+        echo -e "${RED}Error: Could not find boot partition.${NC}"
+        echo ""
+        echo "Available volumes:"
+        ls -la /Volumes/
+        echo ""
+        echo "Please manually configure the SD card:"
+        echo "  1. Mount the boot partition (usually named 'bootfs' or 'boot')"
+        echo "  2. Create an empty file named 'ssh' in the boot partition"
+        echo "  3. Create 'wpa_supplicant.conf' with your WiFi credentials"
+        echo ""
+        echo "Or try running this script again."
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Boot partition found at: $BOOT_VOLUME${NC}"
+    echo ""
+
+    # Extra safety: enable SSH the legacy way too (works even if firstrun doesn't run)
+    # This is compatible with many Raspberry Pi OS images.
+    echo -e "${YELLOW}Enabling SSH on first boot (boot partition flag)...${NC}"
+    touch "$BOOT_VOLUME/ssh" || true
+    echo -e "${GREEN}✓ SSH flag written${NC}"
+    echo ""
+    
+    # Generate WPA-PSK hash for WiFi password
+    echo -e "${YELLOW}Generating WiFi password hash...${NC}"
+    if command -v wpa_passphrase &> /dev/null; then
+        WIFI_PSK_HASH=$(wpa_passphrase "$WIFI_SSID" "$WIFI_PASSWORD" | grep -E "^\s+psk=" | sed 's/.*psk=//' | tr -d '\n')
+    else
+        # Generate WPA-PSK hash using Python (PBKDF2)
+        WIFI_PSK_HASH=$(python3 << PYEOF
+import hashlib
+import binascii
+
+ssid = '$WIFI_SSID'
+password = '$WIFI_PASSWORD'
+
+# WPA-PSK uses PBKDF2 with 4096 iterations
+psk = hashlib.pbkdf2_hmac('sha1', password.encode('utf-8'), ssid.encode('utf-8'), 4096, 32)
+print(binascii.hexlify(psk).decode('ascii'))
+PYEOF
+)
+        echo -e "${GREEN}✓ WiFi password hash generated${NC}"
+    fi
+
+    # Extra safety: write wpa_supplicant.conf onto boot partition as well.
+    # Many images will import this on first boot; it helps if firstrun doesn't execute.
+    echo -e "${YELLOW}Writing WiFi config to boot partition (fallback)...${NC}"
+    cat > "$BOOT_VOLUME/wpa_supplicant.conf" << WPA_BOOT_EOF
+country=$WIFI_COUNTRY
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+
+network={
+    ssid="$WIFI_SSID"
+    psk=$WIFI_PSK_HASH
+}
+WPA_BOOT_EOF
+    chmod 600 "$BOOT_VOLUME/wpa_supplicant.conf" 2>/dev/null || true
+    echo -e "${GREEN}✓ WiFi fallback written${NC}"
+    echo ""
+    
+    # Generate password hash - try openssl first, then Python as fallback
+    echo -e "${YELLOW}Generating password hash...${NC}"
+    
+    PASSWORD_HASH=""
+    
+    # Method 1: Try openssl (most reliable, works on macOS and Linux)
+    if command -v openssl &> /dev/null; then
+        # NOTE: With `set -e`, a failing command substitution can abort the script before
+        # we can fall back. So we must guard it with an `if ...; then` to capture failure.
+        if PASSWORD_HASH=$(openssl passwd -6 -stdin 2>/dev/null <<<"$USER_PASSWORD"); then
+            echo -e "${GREEN}✓ Password hash generated (via openssl)${NC}"
+        else
+            PASSWORD_HASH=""
+        fi
+    fi
+    
+    # Method 2: Fallback to Python crypt module
+    if [ -z "$PASSWORD_HASH" ]; then
+        if command -v python3 &> /dev/null; then
+            # Don't pass password via stdin here: python is already reading its program from stdin.
+            # Use an env var instead to keep it simple and reliable.
+            if PASSWORD_HASH=$(USER_PASSWORD="$USER_PASSWORD" python3 - << 'PYEOF' 2>/dev/null
+import os
+import sys
+try:
+    import crypt
+    password = os.environ.get("USER_PASSWORD", "")
+    if not password:
+        sys.exit(1)
+    hash_val = crypt.crypt(password, crypt.mksalt(crypt.METHOD_SHA512))
+    if not hash_val:
+        sys.exit(1)
+    print(hash_val)
+except (ImportError, AttributeError):
+    sys.exit(1)
+PYEOF
+); then
+                echo -e "${GREEN}✓ Password hash generated (via Python)${NC}"
+            else
+                PASSWORD_HASH=""
+            fi
+        fi
+    fi
+    
+    # Check if we got a valid hash
+    if [ -z "$PASSWORD_HASH" ]; then
+        echo -e "${RED}Error: Failed to generate password hash${NC}"
+        echo -e "${RED}Neither openssl nor Python crypt module are available.${NC}"
+        echo ""
+        echo "Please install openssl:"
+        echo "  brew install openssl"
+        echo ""
+        exit 1
+    fi
+    
+    # Create firstrun.sh script (matches Raspberry Pi Imager approach)
+    echo -e "${YELLOW}Creating firstrun.sh script...${NC}"
+    cat > "$BOOT_VOLUME/firstrun.sh" << 'FIRSTRUN_EOF'
+#!/bin/sh
+
+set +e
+
+# Bookworm commonly mounts the FAT firmware partition at /boot/firmware (not /boot).
+# Detect the correct mountpoint so our cleanup and cmdline edits work reliably.
+BOOT_MNT="/boot"
+if [ -d "/boot/firmware" ]; then
+  BOOT_MNT="/boot/firmware"
+fi
+
+CURRENT_HOSTNAME=$(cat /etc/hostname | tr -d " \t\n\r")
+if [ -f /usr/lib/raspberrypi-sys-mods/imager_custom ]; then
+   /usr/lib/raspberrypi-sys-mods/imager_custom set_hostname HOSTNAME_PLACEHOLDER
+else
+   echo HOSTNAME_PLACEHOLDER >/etc/hostname
+   sed -i "s/127.0.1.1.*$CURRENT_HOSTNAME/127.0.1.1\tHOSTNAME_PLACEHOLDER/g" /etc/hosts
+fi
+FIRSTUSER=$(getent passwd 1000 | cut -d: -f1)
+FIRSTUSERHOME=$(getent passwd 1000 | cut -d: -f6)
+if [ -f /usr/lib/raspberrypi-sys-mods/imager_custom ]; then
+   /usr/lib/raspberrypi-sys-mods/imager_custom enable_ssh
+else
+   systemctl enable ssh
+fi
+if [ -f /usr/lib/userconf-pi/userconf ]; then
+   /usr/lib/userconf-pi/userconf 'USERNAME_PLACEHOLDER' 'PASSWORD_HASH_PLACEHOLDER'
+else
+   echo "USERNAME_PLACEHOLDER:PASSWORD_HASH_PLACEHOLDER" | chpasswd -e
+   if [ "$FIRSTUSER" != "USERNAME_PLACEHOLDER" ]; then
+      usermod -l "USERNAME_PLACEHOLDER" "$FIRSTUSER"
+      usermod -m -d "/home/USERNAME_PLACEHOLDER" "USERNAME_PLACEHOLDER"
+      groupmod -n "USERNAME_PLACEHOLDER" "$FIRSTUSER"
+      if grep -q "^autologin-user=" /etc/lightdm/lightdm.conf ; then
+         sed /etc/lightdm/lightdm.conf -i -e "s/^autologin-user=.*/autologin-user=USERNAME_PLACEHOLDER/"
+      fi
+      if [ -f /etc/systemd/system/getty@tty1.service.d/autologin.conf ]; then
+         sed /etc/systemd/system/getty@tty1.service.d/autologin.conf -i -e "s/$FIRSTUSER/USERNAME_PLACEHOLDER/"
+      fi
+      if [ -f /etc/sudoers.d/010_pi-nopasswd ]; then
+         sed -i "s/^$FIRSTUSER /USERNAME_PLACEHOLDER /" /etc/sudoers.d/010_pi-nopasswd
+      fi
+   fi
+fi
+if [ -f /usr/lib/raspberrypi-sys-mods/imager_custom ]; then
+   /usr/lib/raspberrypi-sys-mods/imager_custom set_wlan 'WIFI_SSID_PLACEHOLDER' 'WIFI_PSK_HASH_PLACEHOLDER' 'WIFI_COUNTRY_PLACEHOLDER'
+else
+cat >/etc/wpa_supplicant/wpa_supplicant.conf <<'WPAEOF'
+country=WIFI_COUNTRY_PLACEHOLDER
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+ap_scan=1
+
+update_config=1
+network={
+	ssid="WIFI_SSID_PLACEHOLDER"
+	key_mgmt=WPA-PSK
+	psk=WIFI_PSK_HASH_PLACEHOLDER
+}
+WPAEOF
+   chmod 600 /etc/wpa_supplicant/wpa_supplicant.conf
+   rfkill unblock wifi
+   for filename in /var/lib/systemd/rfkill/*:wlan ; do
+       echo 0 > $filename
+   done
+fi
+
+# Create a second-boot service to install Avahi after network is fully online
+# This is the Bookworm-safe pattern - don't install packages in firstrun.sh
+cat > /etc/systemd/system/ovbuddy-postboot.service << 'POSTBOOTEOF'
+[Unit]
+Description=OVBuddy Post-Boot Setup (Install Avahi)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/etc/ovbuddy-postboot-done
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 10
+ExecStart=/usr/bin/apt-get update -qq
+ExecStart=/usr/bin/apt-get install -y avahi-daemon
+ExecStart=/bin/systemctl enable avahi-daemon
+ExecStart=/bin/systemctl start avahi-daemon
+ExecStart=/bin/touch /etc/ovbuddy-postboot-done
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+POSTBOOTEOF
+
+# Enable the service to run on next boot (after WiFi is up)
+systemctl enable ovbuddy-postboot.service
+
+# Clean up firstrun.sh and reboot
+rm -f "$BOOT_MNT/firstrun.sh"
+sed -i 's| systemd.run.*||g' "$BOOT_MNT/cmdline.txt"
+
+# Exit successfully - systemd.run_success_action=reboot will trigger reboot
+exit 0
+FIRSTRUN_EOF
+    
+    # Replace placeholders in firstrun.sh
+    sed -i '' "s/HOSTNAME_PLACEHOLDER/$HOSTNAME/g" "$BOOT_VOLUME/firstrun.sh"
+    sed -i '' "s/USERNAME_PLACEHOLDER/$USERNAME/g" "$BOOT_VOLUME/firstrun.sh"
+    sed -i '' "s|PASSWORD_HASH_PLACEHOLDER|$PASSWORD_HASH|g" "$BOOT_VOLUME/firstrun.sh"
+    sed -i '' "s/WIFI_SSID_PLACEHOLDER/$WIFI_SSID/g" "$BOOT_VOLUME/firstrun.sh"
+    sed -i '' "s|WIFI_PSK_HASH_PLACEHOLDER|$WIFI_PSK_HASH|g" "$BOOT_VOLUME/firstrun.sh"
+    sed -i '' "s/WIFI_COUNTRY_PLACEHOLDER/$WIFI_COUNTRY/g" "$BOOT_VOLUME/firstrun.sh"
+    
+    # Make firstrun.sh executable and verify
+    if ! chmod +x "$BOOT_VOLUME/firstrun.sh"; then
+        echo -e "${RED}Error: Failed to make firstrun.sh executable${NC}"
+        exit 1
+    fi
+    
+    # Verify the file exists and is executable
+    if [ ! -x "$BOOT_VOLUME/firstrun.sh" ]; then
+        echo -e "${RED}Error: firstrun.sh is not executable${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ firstrun.sh created and verified${NC}"
+    
+    # Modify cmdline.txt to add systemd.run parameter.
+    # IMPORTANT: Bookworm often mounts firmware at /boot/firmware, so systemd.run must point there.
+    echo -e "${YELLOW}Configuring boot parameters...${NC}"
+    # Prefer /boot/firmware path on modern images; older images may still use /boot.
+    RUN_PATH="/boot/firmware/firstrun.sh"
+    if ! grep -q "systemd.run=" "$BOOT_VOLUME/cmdline.txt"; then
+        # Add systemd.run parameters to cmdline.txt
+        CMDLINE=$(cat "$BOOT_VOLUME/cmdline.txt")
+        echo "$CMDLINE systemd.run=$RUN_PATH systemd.run_success_action=reboot systemd.unit=kernel-command-line.target" > "$BOOT_VOLUME/cmdline.txt"
+        echo -e "${GREEN}✓ Boot parameters configured${NC}"
+    else
+        echo -e "${GREEN}✓ Boot parameters already configured${NC}"
+    fi
+    
+    # Sync and unmount
+    echo ""
+    echo -e "${YELLOW}Syncing and ejecting SD card...${NC}"
+    sync
+    diskutil eject "$DISK_PATH"
+    
+    echo ""
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}  SD CARD SETUP COMPLETE!${NC}"
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo "Your SD card is ready! Next steps:"
+    echo ""
+    echo "1. Insert the SD card into your Raspberry Pi Zero W"
+    echo "2. Power on the Pi"
+    echo ""
+    echo "   First boot (2-3 minutes):"
+    echo "   - Set hostname to '${HOSTNAME}'"
+    echo "   - Configure WiFi (WPA2-compatible)"
+    echo "   - Enable SSH"
+    echo "   - Set up user '${USERNAME}'"
+    echo "   - Create post-boot service"
+    echo "   - Reboot automatically"
+    echo ""
+    echo "   Second boot (2-3 minutes):"
+    echo "   - Connect to WiFi"
+    echo "   - Install Avahi (mDNS for .local hostname)"
+    echo ""
+    echo "   Total time: ~5-6 minutes from first power-on"
+    echo ""
+    echo "3. After 6 minutes, test the connection:"
+    echo "   ping ${HOSTNAME}.local"
+    echo "   ssh ${USERNAME}@${HOSTNAME}.local"
+    echo ""
+    echo "   If .local doesn't work, find the IP:"
+    echo "   cd scripts && ./find-pi.sh"
+    echo ""
+    echo "4. Update the setup.env file in the OVBuddy project:"
+    echo "   PI_HOST=${HOSTNAME}.local"
+    echo "   PI_USER=${USERNAME}"
+    echo "   PI_PASSWORD=[your password from setup.env]"
+    echo ""
+    echo "5. Run the deployment script:"
+    echo "   cd scripts"
+    echo "   ./deploy.sh"
+    echo ""
+
+# ============================================================================
+# MANUAL GUI METHOD
+# ============================================================================
+else
+    # Check if Raspberry Pi Imager is installed
+    RPI_IMAGER_APP="/Applications/Raspberry Pi Imager.app"
+    if [[ ! -d "$RPI_IMAGER_APP" ]]; then
+        echo -e "${YELLOW}Raspberry Pi Imager not found.${NC}"
+        echo ""
+        echo "Please install Raspberry Pi Imager:"
+        echo "  brew install --cask raspberry-pi-imager"
+        echo ""
+        echo "Or download from: https://www.raspberrypi.com/software/"
+        echo ""
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Raspberry Pi Imager is installed${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}  MANUAL SETUP INSTRUCTIONS${NC}"
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo "1. Launch Raspberry Pi Imager"
+    echo ""
+    echo "2. Click 'CHOOSE DEVICE' and select:"
+    echo "   → Raspberry Pi Zero W"
+    echo ""
+    echo "3. Click 'CHOOSE OS' and select:"
+    echo "   → Raspberry Pi OS (other)"
+    echo "   → Raspberry Pi OS Lite (32-bit)"
+    echo "   → Latest version (Bookworm) - works with Pi Zero W"
+    echo ""
+    echo "4. Click 'CHOOSE STORAGE' and select your SD card"
+    echo ""
+    echo "5. Click the gear icon (⚙️) or 'EDIT SETTINGS' to configure:"
+    echo ""
+    echo "   General Settings:"
+    echo "   ✓ Set hostname: ${HOSTNAME}"
+    echo "   ✓ Set username and password:"
+    echo "       Username: ${USERNAME}"
+    echo "       Password: [your password]"
+    echo "   ✓ Configure wireless LAN:"
+    echo "       SSID: ${WIFI_SSID}"
+    echo "       Password: [your WiFi password]"
+    echo "       Country: ${WIFI_COUNTRY}"
+    echo "   ✓ Set locale settings:"
+    echo "       Time zone: [your timezone]"
+    echo "       Keyboard layout: [your layout]"
+    echo ""
+    echo "   Services:"
+    echo "   ✓ Enable SSH"
+    echo "   ✓ Use password authentication"
+    echo ""
+    echo "6. Click 'SAVE' to save the settings"
+    echo ""
+    echo "7. Click 'WRITE' to write the image to the SD card"
+    echo ""
+    echo "8. Wait for the write and verification to complete"
+    echo ""
+    echo "9. Eject the SD card and insert it into your Raspberry Pi Zero W"
+    echo ""
+    echo "10. Power on the Raspberry Pi and wait for it to boot (first boot takes longer)"
+    echo ""
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+    
+    read -p "Press Enter to launch Raspberry Pi Imager..." -r
+    echo ""
+    
+    # Launch Raspberry Pi Imager
+    echo "Launching Raspberry Pi Imager..."
+    open -a "Raspberry Pi Imager"
+    
+    echo ""
+    echo -e "${GREEN}After the SD card is ready and the Pi is booted:${NC}"
+    echo ""
+    echo "1. Test SSH connection:"
+    echo "   ssh ${USERNAME}@${HOSTNAME}.local"
+    echo ""
+    echo "2. Update the .env file in the OVBuddy project:"
+    echo "   PI_HOST=${HOSTNAME}.local"
+    echo "   PI_USER=${USERNAME}"
+    echo "   PI_PASSWORD=[your password]"
+    echo ""
+    echo "3. Run the deployment script:"
+    echo "   cd scripts"
+    echo "   ./deploy.sh"
+    echo ""
+    echo "4. Setup passwordless sudo (optional but recommended):"
+    echo "   ./setup-passwordless-sudo.sh"
+    echo ""
+fi
+
+echo -e "${GREEN}Done!${NC}"
