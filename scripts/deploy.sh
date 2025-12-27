@@ -177,6 +177,10 @@ else
         echo "  → static/ (directory)"
         sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$DIST_DIR/static" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
     fi
+    if [ -d "$DIST_DIR/pi-tools" ]; then
+        echo "  → pi-tools/ (directory)"
+        sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$DIST_DIR/pi-tools" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
+    fi
 
     echo -e "${GREEN}ovbuddy.py deployed successfully!${NC}"
     echo ""
@@ -202,11 +206,15 @@ else
         echo "  → static/ (directory)"
         sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$DIST_DIR/static" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
     fi
+    if [ -d "$DIST_DIR/pi-tools" ]; then
+        echo "  → pi-tools/ (directory)"
+        sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$DIST_DIR/pi-tools" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
+    fi
 
     # Make scripts executable
     echo ""
     echo "Making scripts executable..."
-    sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && chmod +x *.sh 2>/dev/null || true"
+    sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && chmod +x *.sh pi-tools/*.sh 2>/dev/null || true"
     fi
 fi
 
