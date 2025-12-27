@@ -11,8 +11,9 @@ ExecStart=/usr/local/bin/fix-bonjour-persistent.sh
 RemainAfterExit=yes
 StandardOutput=journal
 StandardError=journal
-# This must never block boot for long; keep it short and best-effort.
-TimeoutStartSec=5
+# Keep it best-effort, but allow enough time for systemctl/hostnamectl calls on slower boots.
+# (Also avoids install scripts timing out when they start the unit.)
+TimeoutStartSec=20
 
 [Install]
 WantedBy=multi-user.target

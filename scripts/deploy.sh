@@ -816,7 +816,7 @@ if [ -f "$DIST_DIR/fix-bonjour.service" ]; then
             sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
                 sudo -n systemctl daemon-reload 2>/dev/null && \
                 sudo -n systemctl enable fix-bonjour.service 2>/dev/null && \
-                sudo -n systemctl start fix-bonjour.service 2>/dev/null && \
+                sudo -n systemctl start fix-bonjour.service --no-block 2>/dev/null && \
                 echo '✓ Service installed and started'
             " 2>/dev/null || {
                 echo -e "${YELLOW}  ⚠ Could not enable/start service${NC}"
@@ -825,7 +825,7 @@ if [ -f "$DIST_DIR/fix-bonjour.service" ]; then
             $TIMEOUT_CMD 15 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
                 sudo systemctl daemon-reload 2>/dev/null && \
                 sudo systemctl enable fix-bonjour.service 2>/dev/null && \
-                sudo systemctl start fix-bonjour.service 2>/dev/null && \
+                sudo systemctl start fix-bonjour.service --no-block 2>/dev/null && \
                 echo '✓ Service installed and started'
             " 2>/dev/null || {
                 echo -e "${YELLOW}  ⚠ Could not enable/start service (may require passwordless sudo or timed out)${NC}"
@@ -893,7 +893,8 @@ if [ -f "$DIST_DIR/install-all-services.sh" ]; then
         echo "    - ovbuddy-wifi.service (WiFi monitor, if enabled)"
         echo "    - fix-bonjour.service (avahi-daemon fix)"
         
-        if $TIMEOUT_CMD 120 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n bash ${REMOTE_DIR}/install-all-services.sh" 2>&1; then
+        # Some systems are slow to stop/start services or install WiFi deps; keep this generous.
+        if $TIMEOUT_CMD 300 sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo -n bash ${REMOTE_DIR}/install-all-services.sh" 2>&1; then
             INSTALLED=true
             echo -e "${GREEN}  ✓ All services installed successfully${NC}"
         else

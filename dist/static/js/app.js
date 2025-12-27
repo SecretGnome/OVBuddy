@@ -90,10 +90,13 @@ function initModulesFromToggles() {
                 applyModuleVisibility();
                 syncHeaderToggles();
 
-                // Auth changes should reload to avoid confusing 401s / stale state
-                if (key === 'web_auth_basic') {
-                    showMessage('Web auth setting changed. Reloading... [OK]', 'success');
-                    setTimeout(() => window.location.reload(), 500);
+                // When enabling web auth, do NOT reload immediately.
+                // User should set credentials first, then reload explicitly.
+                if (key === 'web_auth_basic' && target) {
+                    // Ensure the panel is visible so they can set credentials
+                    maybeInitEnabledModules();
+                    loadWebAuthStatus();
+                    showMessage('Web auth enabled. Set a username/password, then click "Update Web Login" and "Reload & Login".', 'info');
                     return;
                 }
 
@@ -185,6 +188,16 @@ function loadConfiguration() {
 }
 
 // Web Authentication Management (Basic Auth)
+function reloadForWebAuth() {
+    window.location.reload();
+}
+
+function setWebAuthReloadButtonVisible(visible) {
+    const btn = document.getElementById('webAuthReloadButton');
+    if (!btn) return;
+    btn.style.display = visible ? 'inline-block' : 'none';
+}
+
 function loadWebAuthStatus() {
     fetch('/api/web-auth')
         .then(r => r.json())
@@ -194,8 +207,12 @@ function loadWebAuthStatus() {
             if (statusEl) {
                 const source = data.source ? data.source.toUpperCase() : 'UNKNOWN';
                 const enabled = data.enabled ? 'ENABLED [OK]' : 'DISABLED [WARN]';
+                const configured = (data.configured === undefined) ? !!data.exists : !!data.configured;
                 const path = data.path ? ` | FILE: ${data.path}` : '';
-                statusEl.textContent = `${enabled} | SOURCE: ${source}${path}`;
+                const cfgText = data.enabled ? (configured ? ' | CONFIGURED [OK]' : ' | NOT CONFIGURED [WARN]') : '';
+                statusEl.textContent = `${enabled}${cfgText} | SOURCE: ${source}${path}`;
+                // Only show Reload button after credentials are configured
+                setWebAuthReloadButtonVisible(!!data.enabled && configured);
             }
             if (userEl) {
                 userEl.value = data.username || '';
@@ -205,6 +222,7 @@ function loadWebAuthStatus() {
             console.error('Error loading web auth status:', err);
             const statusEl = document.getElementById('webAuthStatusText');
             if (statusEl) statusEl.textContent = 'Error loading status [FAIL]';
+            setWebAuthReloadButtonVisible(false);
         });
 }
 
@@ -246,6 +264,7 @@ function saveWebAuth(event) {
             if (p1) p1.value = '';
             if (p2) p2.value = '';
             loadWebAuthStatus();
+            // Do not auto-reload; user explicitly clicks "Reload & Login"
         } else {
             showMessage('Error: ' + (data.error || 'Failed to update web auth'), 'error');
         }

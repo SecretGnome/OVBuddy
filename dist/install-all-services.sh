@@ -182,8 +182,9 @@ echo "Enabling and starting services..."
 # Start fix-bonjour first
 if [ "$BONJOUR_INSTALLED" = true ]; then
     systemctl enable fix-bonjour
-    systemctl start fix-bonjour
-    echo -e "${GREEN}✓ fix-bonjour service enabled and started${NC}"
+    echo "Starting fix-bonjour (best-effort; will not block install)..."
+    systemctl start fix-bonjour --no-block 2>/dev/null || true
+    echo -e "${GREEN}✓ fix-bonjour service enabled${NC}"
     
     # Enable timer if it exists
     if [ -f "/etc/systemd/system/fix-bonjour.timer" ]; then
@@ -191,9 +192,6 @@ if [ "$BONJOUR_INSTALLED" = true ]; then
         systemctl start fix-bonjour.timer
         echo -e "${GREEN}✓ fix-bonjour timer enabled and started${NC}"
     fi
-    
-    # Give it a moment to ensure avahi-daemon is running
-    sleep 2
 fi
 
 # Start WiFi monitor (before display and web services)
