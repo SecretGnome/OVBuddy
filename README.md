@@ -2,7 +2,7 @@
 
 OVBuddy is a Swiss public transport departure display for Raspberry Pi with a Waveshare 2.13" e-ink screen.
 
-![OVBuddy Display](assets/test-output.jpg)
+![OVBuddy Display](assets/device.jpg)
 
 ## Quick start
 
@@ -50,6 +50,10 @@ cd scripts
 Useful flags:
 - `-main`: deploy `ovbuddy.py` (+ web UI assets) only
 - `-reboot`: reboot after deploy and verify services
+
+After rebooting (takes ~1min 30sec) you should see something like this:
+
+![OVBuddy Display](assets/test-output.jpg)
 
 ## Web interface (port 8080)
 
