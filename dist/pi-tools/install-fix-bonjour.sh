@@ -106,3 +106,5 @@ if [ -f "$TIMER_FILE" ]; then
     echo "  sudo systemctl list-timers $SERVICE_NAME # List timer schedule"
 fi
 
+
+

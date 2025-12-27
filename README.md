@@ -2,7 +2,6 @@
 
 OVBuddy is a Swiss public transport departure display for Raspberry Pi with a Waveshare 2.13" e-ink screen.
 
-![OVBuddy Display](assets/test-output.jpg)
 
 ## Quick start
 

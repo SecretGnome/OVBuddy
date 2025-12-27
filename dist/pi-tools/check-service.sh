@@ -63,3 +63,5 @@ echo "You can test the script manually with:"
 echo "  cd /home/pi/ovbuddy"
 echo "  python3 ovbuddy.py"
 
+
+

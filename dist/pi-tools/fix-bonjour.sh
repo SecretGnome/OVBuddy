@@ -77,3 +77,5 @@ echo "  - Wait 30-60 seconds for mDNS to propagate"
 echo "  - Test: ping ovbuddy.local"
 echo "  - Test: ssh pi@ovbuddy.local"
 
+
+

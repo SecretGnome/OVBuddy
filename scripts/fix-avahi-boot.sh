@@ -63,7 +63,7 @@ echo ""
 
 # Deploy the ensure-avahi-enabled script
 echo -e "${YELLOW}Deploying ensure-avahi-enabled.sh script...${NC}"
-sshpass -p "$PI_PASSWORD" scp $SSH_OPTS dist/ensure-avahi-enabled.sh "${PI_USER}@${PI_SSH_HOST}:/tmp/" 2>/dev/null
+sshpass -p "$PI_PASSWORD" scp $SSH_OPTS dist/pi-tools/ensure-avahi-enabled.sh "${PI_USER}@${PI_SSH_HOST}:/tmp/" 2>/dev/null
 echo "✓ Script deployed"
 echo ""
 
@@ -77,7 +77,7 @@ echo ""
 
 # Re-deploy and reinstall the fix-bonjour service with updated script
 echo -e "${YELLOW}Updating fix-bonjour service...${NC}"
-sshpass -p "$PI_PASSWORD" scp $SSH_OPTS dist/fix-bonjour.service dist/fix-bonjour-persistent.sh dist/install-fix-bonjour.sh "${PI_USER}@${PI_SSH_HOST}:/tmp/" 2>/dev/null
+sshpass -p "$PI_PASSWORD" scp $SSH_OPTS dist/fix-bonjour.service dist/fix-bonjour-persistent.sh dist/pi-tools/install-fix-bonjour.sh "${PI_USER}@${PI_SSH_HOST}:/tmp/" 2>/dev/null
 echo "✓ Files deployed"
 echo ""
 
