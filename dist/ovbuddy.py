@@ -3067,9 +3067,10 @@ if FLASK_AVAILABLE:
         if not _is_module_enabled("web_auth_basic"):
             return None
 
-        # If the auth file doesn't exist yet, create it (best-effort) so the UI is always protected.
+        # If auth is enabled but not configured yet, allow access so the user can set a password first.
+        # Once configured, all requests require valid credentials.
         if not _web_auth_configured():
-            _ensure_web_auth_initialized()
+            return None
         auth = request.authorization
         if not auth or not _check_basic_auth(auth.username, auth.password):
             return _basic_auth_challenge()
@@ -3145,8 +3146,6 @@ if FLASK_AVAILABLE:
                 return jsonify({"success": False, "error": "Failed to save web settings"}), 500
 
             # Side-effects
-            if after.get("web_auth_basic", True):
-                _ensure_web_auth_initialized()
             if bool(before.get("config_json", True)) != bool(after.get("config_json", True)):
                 load_config(force=True)
                 global config_reload_needed
@@ -3193,6 +3192,7 @@ if FLASK_AVAILABLE:
                     "source": "disabled",
                     "path": None,
                     "exists": False,
+                    "configured": False,
                     "username": ""
                 })
             path, user, _, ok = _read_web_auth_file_cached()
@@ -3201,6 +3201,7 @@ if FLASK_AVAILABLE:
                 "source": "sd_root_file",
                 "path": path,
                 "exists": bool(ok),
+                "configured": bool(ok),
                 "username": user or ""
             })
         except Exception as e:
@@ -3625,7 +3626,7 @@ if FLASK_AVAILABLE:
             # This is intentionally done after stopping services so nothing else overwrites the screen.
             try:
                 if TEST_MODE:
-                    render_action_screen(None, title="Rebooting...", message="Please wait", test_mode=True)
+                    render_rebooting_screen(None, test_mode=True)
                 else:
                     try:
                         import epd2in13_V4
@@ -3636,7 +3637,7 @@ if FLASK_AVAILABLE:
                     if epd2in13_V4 is not None:
                         epd = epd2in13_V4.EPD()
                         epd.init()
-                        render_action_screen(epd, title="Rebooting...", message="Please wait", test_mode=False)
+                        render_rebooting_screen(epd, test_mode=False)
                         # Put display to sleep to reduce power/ghosting while rebooting
                         try:
                             epd.sleep()
@@ -3647,6 +3648,20 @@ if FLASK_AVAILABLE:
                 print(f"Warning: failed to render reboot screen: {e}")
 
             write_ui_event("Reboot", "Rebooting device...", duration_seconds=6)
+
+            # Safety net: if the reboot command fails to actually reboot the host for any reason,
+            # we don't want to leave the system with stopped services. This background job will
+            # try to restart key services after a short delay. During a real reboot it will be killed.
+            try:
+                subprocess.Popen(
+                    ['bash', '-lc', 'sleep 25; sudo -n systemctl start ovbuddy ovbuddy-web ovbuddy-wifi >/dev/null 2>&1 || true'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            except Exception:
+                pass
+
             subprocess.Popen(
                 ['sudo', '-n', 'systemctl', 'reboot'],
                 stdout=subprocess.DEVNULL,
