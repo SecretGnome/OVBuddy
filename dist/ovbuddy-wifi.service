@@ -1,8 +1,10 @@
 [Unit]
 Description=OVBuddy WiFi Monitor and Access Point Fallback
-After=network.target fix-bonjour.service avahi-daemon.service
+After=network.target
 Wants=network.target
-Before=ovbuddy.service ovbuddy-web.service
+# Start WiFi monitor early enough for the web UI/AP fallback, but do not block the
+# display service from starting (it can show status even while WiFi comes up).
+Before=ovbuddy-web.service
 
 [Service]
 Type=simple

@@ -1124,7 +1124,8 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
                 f.write(config_backup)
             print("✓ Configuration restored")
         
-        render_update_screen(epd, "Update complete! Rebooting...", target_version, test_mode)
+        # Standardized reboot screen (same as manual reboot)
+        render_rebooting_screen(epd, test_mode=test_mode)
         print("\n" + "="*50)
         print("UPDATE COMPLETED SUCCESSFULLY")
         print("="*50)
@@ -1157,8 +1158,9 @@ def normalize_line_number(line_str):
         return ""
     # Remove common prefixes and whitespace
     normalized = str(line_str).strip().upper()
-    # Remove S, T, RE, IC, etc. prefixes
-    prefixes = ['S', 'T', 'RE', 'IC', 'IR', 'EC', 'RJ']
+    # Remove common transport prefixes.
+    # Note: order matters (longer prefixes must come before shorter ones, e.g. BUS before B).
+    prefixes = ['BUS', 'TRAM', 'RE', 'IC', 'IR', 'EC', 'RJ', 'S', 'T', 'B']
     for prefix in prefixes:
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix):].strip()
@@ -2195,6 +2197,10 @@ def render_update_screen(epd=None, status="Updating...", version=None, test_mode
         
     except Exception as e:
         print(f"Error rendering update screen: {e}")
+
+def render_rebooting_screen(epd=None, test_mode=False):
+    """Render the standardized reboot screen (consistent across manual reboot + updates)."""
+    render_action_screen(epd, title="Rebooting...", message="Please wait", test_mode=test_mode)
 
 def render_action_screen(epd=None, title="Action", message="", test_mode=False):
     """Render a short feedback screen for user actions (restart/join wifi/etc)."""
@@ -3350,7 +3356,7 @@ if FLASK_AVAILABLE:
             load_web_settings()
             if not _is_module_enabled("systemctl_status"):
                 return jsonify({"error": "systemctl status module is disabled"}), 404
-            services = ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon']
+            services = ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon', 'ssh']
             status = {}
             for service in services:
                 status[service] = get_service_status(service)
@@ -3360,14 +3366,19 @@ if FLASK_AVAILABLE:
     
     @app.route('/api/services/<service_name>/<action>', methods=['POST'])
     def service_control(service_name, action):
-        """Control a service (start, stop, restart)"""
+        """Control a service (start/stop/restart/enable/disable)"""
         try:
             load_web_settings()
             if not _is_module_enabled("systemctl_status"):
                 return jsonify({"success": False, "error": "systemctl status module is disabled"}), 404
-            # Only allow control of OVBuddy services and avahi-daemon
-            if service_name not in ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon']:
+            # Only allow control of a small allow-list of services
+            allowed_services = ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon', 'ssh']
+            if service_name not in allowed_services:
                 return jsonify({"success": False, "error": "Invalid service name"}), 400
+
+            allowed_actions = ['start', 'stop', 'restart', 'enable', 'disable']
+            if action not in allowed_actions:
+                return jsonify({"success": False, "error": "Invalid action"}), 400
             
             write_ui_event("Service", f"{action}: {service_name}", duration_seconds=4)
             result = control_service(service_name, action)
@@ -3923,8 +3934,8 @@ def main(test_mode_arg=False, disable_web=False):
                             if install_result.returncode == 0:
                                 print("✓ Services reinstalled and restarted successfully")
                                 services_restarted = True
-                                # Show rebooting message
-                                render_update_screen(epd, "Rebooting...", latest_version, test_mode_arg)
+                                # Show rebooting message (standardized)
+                                render_rebooting_screen(epd, test_mode=test_mode_arg)
                                 time.sleep(2)  # Give user time to see the message
                                 # Reboot to apply changes cleanly
                                 try:
@@ -3982,8 +3993,8 @@ def main(test_mode_arg=False, disable_web=False):
                                              timeout=10, check=False)
                                 print("✓ ovbuddy-wifi service also restarted")
                             
-                            # Show rebooting message
-                            render_update_screen(epd, "Rebooting...", latest_version, test_mode_arg)
+                            # Show rebooting message (standardized)
+                            render_rebooting_screen(epd, test_mode=test_mode_arg)
                             time.sleep(2)  # Give user time to see the message
                             # Reboot to apply changes cleanly
                             try:
@@ -4091,7 +4102,7 @@ def main(test_mode_arg=False, disable_web=False):
                                 if install_result.returncode == 0:
                                     print("✓ Services reinstalled and restarted successfully")
                                     services_restarted = True
-                                    render_update_screen(epd, "Rebooting...", target_version, test_mode_arg)
+                                    render_rebooting_screen(epd, test_mode=test_mode_arg)
                                     time.sleep(2)
                                     try:
                                         if not test_mode_arg:
@@ -4128,7 +4139,7 @@ def main(test_mode_arg=False, disable_web=False):
                                 else:
                                     print("✓ ovbuddy service restarted (ovbuddy-web not active)")
                                 
-                                render_update_screen(epd, "Rebooting...", target_version, test_mode_arg)
+                                render_rebooting_screen(epd, test_mode=test_mode_arg)
                                 time.sleep(2)
                                 try:
                                     if not test_mode_arg:

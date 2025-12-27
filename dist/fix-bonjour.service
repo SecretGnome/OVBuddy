@@ -11,8 +11,8 @@ ExecStart=/usr/local/bin/fix-bonjour-persistent.sh
 RemainAfterExit=yes
 StandardOutput=journal
 StandardError=journal
-# Give the script time to complete
-TimeoutStartSec=20
+# This must never block boot for long; keep it short and best-effort.
+TimeoutStartSec=5
 
 [Install]
 WantedBy=multi-user.target
