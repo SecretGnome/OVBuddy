@@ -167,9 +167,20 @@ else
     fi
     echo "  → ovbuddy.py"
     sshpass -p "$PI_PASSWORD" scp $SCP_OPTS "$DIST_DIR/ovbuddy.py" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
+    
+    # Safety: ensure web UI assets exist (templates + static). This prevents empty/missing templates when iterating with -main.
+    if [ -d "$DIST_DIR/templates" ]; then
+        echo "  → templates/ (directory)"
+        sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$DIST_DIR/templates" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
+    fi
+    if [ -d "$DIST_DIR/static" ]; then
+        echo "  → static/ (directory)"
+        sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$DIST_DIR/static" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
+    fi
+
     echo -e "${GREEN}ovbuddy.py deployed successfully!${NC}"
     echo ""
-    echo "Note: Only ovbuddy.py was deployed. To deploy all files, run without -main argument."
+    echo "Note: -main deploys ovbuddy.py plus web UI assets (templates/static). To deploy everything, run without -main."
 else
     echo "Copying files from $DIST_DIR/ folder..."
     

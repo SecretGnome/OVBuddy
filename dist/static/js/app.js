@@ -3,6 +3,106 @@
 // Global state
 let selectedNetwork = null;
 let selectedNetworkElement = null;
+let MODULES = null;
+
+function getDefaultModules() {
+    return {
+        web_auth_basic: true,
+        config_json: true,
+        systemctl_status: true,
+        iwconfig: true,
+        shutdown: true
+    };
+}
+
+function moduleEnabled(key) {
+    const mods = MODULES || getDefaultModules();
+    return mods[key] !== false;
+}
+
+async function loadModules() {
+    try {
+        const r = await fetch('/api/modules');
+        const data = await r.json();
+        MODULES = (data && data.modules) ? data.modules : getDefaultModules();
+    } catch (e) {
+        console.warn('Failed to load module settings, falling back to defaults:', e);
+        MODULES = getDefaultModules();
+    }
+    return MODULES;
+}
+
+function applyModuleVisibility() {
+    const windows = document.querySelectorAll('.terminal-window[data-module]');
+    windows.forEach(win => {
+        const key = win.getAttribute('data-module');
+        const enabled = moduleEnabled(key);
+        if (!enabled) {
+            win.classList.add('collapsed', 'module-disabled');
+        } else {
+            win.classList.remove('collapsed', 'module-disabled');
+        }
+    });
+
+    // Show/hide DISABLED badges
+    document.querySelectorAll('[data-module-badge]').forEach(badge => {
+        const key = badge.getAttribute('data-module-badge');
+        const enabled = moduleEnabled(key);
+        badge.style.display = enabled ? 'none' : 'inline-block';
+    });
+}
+
+function populateModulesForm() {
+    const mapping = [
+        ['module_web_auth_basic', 'web_auth_basic'],
+        ['module_config_json', 'config_json'],
+        ['module_systemctl_status', 'systemctl_status'],
+        ['module_iwconfig', 'iwconfig'],
+        ['module_shutdown', 'shutdown']
+    ];
+    mapping.forEach(([id, key]) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = moduleEnabled(key);
+    });
+}
+
+function collectModulesForm() {
+    const getChecked = (id, fallback) => {
+        const el = document.getElementById(id);
+        return el ? !!el.checked : fallback;
+    };
+    const defaults = getDefaultModules();
+    return {
+        web_auth_basic: getChecked('module_web_auth_basic', defaults.web_auth_basic),
+        config_json: getChecked('module_config_json', defaults.config_json),
+        systemctl_status: getChecked('module_systemctl_status', defaults.systemctl_status),
+        iwconfig: getChecked('module_iwconfig', defaults.iwconfig),
+        shutdown: getChecked('module_shutdown', defaults.shutdown)
+    };
+}
+
+async function saveModules(event) {
+    event.preventDefault();
+    const mods = collectModulesForm();
+    try {
+        const r = await fetch('/api/modules', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modules: mods })
+        });
+        const data = await r.json();
+        if (data && data.success) {
+            showMessage('Module settings saved. Reloading... [OK]', 'success');
+            // Reload to re-run auth + apply server-side behavior changes cleanly
+            setTimeout(() => window.location.reload(), 500);
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to save module settings'), 'error');
+        }
+    } catch (e) {
+        console.error('Error saving modules:', e);
+        showMessage('Error saving module settings', 'error');
+    }
+}
 
 // Utility Functions
 function showMessage(text, type = 'info') {
@@ -631,6 +731,10 @@ function hideRestartSnackbar() {
 
 function restartServiceFromSnackbar() {
     console.log('Restarting ovbuddy service from snackbar...');
+    if (!moduleEnabled('systemctl_status')) {
+        showMessage('systemctl status module is disabled; cannot restart service from UI', 'error');
+        return;
+    }
     hideRestartSnackbar();
     controlService('ovbuddy', 'restart');
 }
@@ -874,10 +978,12 @@ function shutdownDisplay() {
     .then(data => {
         if (data.success) {
             showMessage(data.message || 'Shutdown successful! Display cleared. [OK]', 'success');
-            // Refresh service status after a delay
-            setTimeout(() => {
-                refreshServicesStatus();
-            }, 2000);
+            // Refresh service status after a delay (if enabled)
+            if (moduleEnabled('systemctl_status')) {
+                setTimeout(() => {
+                    refreshServicesStatus();
+                }, 2000);
+            }
             // Clear file input
             if (imageInput) {
                 imageInput.value = '';
@@ -970,27 +1076,47 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Load saved theme
     loadTheme();
-    
-    // Load initial data
-    loadConfiguration();
-    loadWebAuthStatus();
-    refreshWifiStatus();
-    refreshServicesStatus();
-    loadVersionInfo();
-    
-    // Refresh version info periodically (every 30 seconds)
-    setInterval(loadVersionInfo, 30000);
-    
-    // Setup form handler
-    const configForm = document.getElementById('configForm');
-    if (configForm) {
-        configForm.addEventListener('submit', saveConfiguration);
-    }
 
-    const webAuthForm = document.getElementById('webAuthForm');
-    if (webAuthForm) {
-        webAuthForm.addEventListener('submit', saveWebAuth);
-    }
+    // Load module settings first, then initialize enabled modules
+    (async () => {
+        await loadModules();
+        applyModuleVisibility();
+        populateModulesForm();
+
+        const modulesForm = document.getElementById('modulesForm');
+        if (modulesForm) {
+            modulesForm.addEventListener('submit', saveModules);
+        }
+
+        // Load initial data (only for enabled modules)
+        if (moduleEnabled('config_json')) {
+            loadConfiguration();
+            const configForm = document.getElementById('configForm');
+            if (configForm) {
+                configForm.addEventListener('submit', saveConfiguration);
+            }
+        }
+
+        if (moduleEnabled('web_auth_basic')) {
+            loadWebAuthStatus();
+            const webAuthForm = document.getElementById('webAuthForm');
+            if (webAuthForm) {
+                webAuthForm.addEventListener('submit', saveWebAuth);
+            }
+        }
+
+        if (moduleEnabled('iwconfig')) {
+            refreshWifiStatus();
+        }
+
+        if (moduleEnabled('systemctl_status')) {
+            refreshServicesStatus();
+        }
+
+        // Always-on
+        loadVersionInfo();
+        setInterval(loadVersionInfo, 30000);
+    })();
     
     // Add terminal typing effect to title (only for terminal theme)
     const savedTheme = localStorage.getItem('ovbuddy-theme') || 'terminal';

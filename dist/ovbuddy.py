@@ -59,14 +59,103 @@ if not TEST_MODE:
 # --------------------------
 # VERSION
 # --------------------------
-VERSION = "0.0.13"
-
+VERSION = "0.0.14"
 # --------------------------
 # CONFIGURATION
 # --------------------------
 CONFIG_FILE = "config.json"
 CONFIG_LOCK = threading.Lock()
 CONFIG_LAST_MODIFIED = 0
+
+# --------------------------
+# WEB UI MODULE SETTINGS
+# --------------------------
+# These settings control which modules/panels are enabled in the web UI and which
+# backend endpoints/features are active. They are stored separately from
+# config.json so the web UI can still function even if config.json usage is
+# disabled.
+WEB_SETTINGS_FILE = "web_settings.json"
+WEB_SETTINGS_LOCK = threading.Lock()
+
+DEFAULT_WEB_SETTINGS = {
+    "modules": {
+        # When disabled: the web auth panel is collapsed and Flask does NOT require Basic Auth.
+        "web_auth_basic": True,
+        # When disabled: config.json panel is collapsed and DEFAULT_CONFIG values are used (config.json is ignored).
+        "config_json": True,
+        # When disabled: systemctl status panel is collapsed and /api/services/* is disabled.
+        "systemctl_status": True,
+        # When disabled: iwconfig panel is collapsed and /api/wifi/* is disabled.
+        "iwconfig": True,
+        # When disabled: shutdown panel is collapsed and /api/shutdown + /api/reboot are disabled.
+        "shutdown": True,
+    }
+}
+
+# Current web module flags (loaded from WEB_SETTINGS_FILE, falls back to defaults).
+WEB_MODULES = dict(DEFAULT_WEB_SETTINGS["modules"])
+
+def _web_settings_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), WEB_SETTINGS_FILE)
+
+def _is_module_enabled(name: str) -> bool:
+    try:
+        return bool(WEB_MODULES.get(str(name), True))
+    except Exception:
+        return True
+
+def load_web_settings():
+    """Load web module settings from web_settings.json (best-effort)."""
+    global WEB_MODULES
+    with WEB_SETTINGS_LOCK:
+        path = _web_settings_path()
+        if not os.path.exists(path):
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(DEFAULT_WEB_SETTINGS, f, indent=2, ensure_ascii=False)
+            except Exception:
+                # If we cannot write, just keep defaults.
+                WEB_MODULES = dict(DEFAULT_WEB_SETTINGS["modules"])
+                return dict(WEB_MODULES)
+            WEB_MODULES = dict(DEFAULT_WEB_SETTINGS["modules"])
+            return dict(WEB_MODULES)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            mods = data.get("modules", {}) if isinstance(data, dict) else {}
+            merged = dict(DEFAULT_WEB_SETTINGS["modules"])
+            if isinstance(mods, dict):
+                for k, v in mods.items():
+                    if k in merged:
+                        merged[k] = _parse_bool(v, merged[k])
+            WEB_MODULES = merged
+            return dict(WEB_MODULES)
+        except Exception:
+            WEB_MODULES = dict(DEFAULT_WEB_SETTINGS["modules"])
+            return dict(WEB_MODULES)
+
+def save_web_settings(new_modules: dict):
+    """Persist web module settings to web_settings.json (validated)."""
+    global WEB_MODULES
+    if not isinstance(new_modules, dict):
+        return False
+    allowed = set(DEFAULT_WEB_SETTINGS["modules"].keys())
+    merged = dict(WEB_MODULES) if isinstance(WEB_MODULES, dict) else dict(DEFAULT_WEB_SETTINGS["modules"])
+    for k, default_val in DEFAULT_WEB_SETTINGS["modules"].items():
+        if k in new_modules:
+            merged[k] = _parse_bool(new_modules.get(k), default_val)
+    # Drop unknown keys by only keeping allowed
+    merged = {k: bool(merged.get(k, DEFAULT_WEB_SETTINGS["modules"][k])) for k in allowed}
+
+    with WEB_SETTINGS_LOCK:
+        try:
+            path = _web_settings_path()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"modules": merged}, f, indent=2, ensure_ascii=False)
+            WEB_MODULES = dict(merged)
+            return True
+        except Exception:
+            return False
 
 # Default configuration values (used as fallback)
 DEFAULT_CONFIG = {
@@ -221,8 +310,37 @@ def _apply_display_orientation(image):
 # --------------------------
 # CONFIGURATION FUNCTIONS
 # --------------------------
-def load_config():
-    """Load configuration from config.json file"""
+def _apply_default_config():
+    """Reset all config globals to DEFAULT_CONFIG (thread-safe; caller holds CONFIG_LOCK)."""
+    global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
+    global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
+    global INVERTED, MAX_DEPARTURES, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
+    global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
+
+    STATIONS = DEFAULT_CONFIG["stations"]
+    LINES = DEFAULT_CONFIG["lines"]
+    REFRESH_INTERVAL = DEFAULT_CONFIG["refresh_interval"]
+    QR_CODE_DISPLAY_DURATION = DEFAULT_CONFIG["qr_code_display_duration"]
+    DESTINATION_PREFIXES_TO_REMOVE = DEFAULT_CONFIG["destination_prefixes_to_remove"]
+    DESTINATION_EXCEPTIONS = DEFAULT_CONFIG["destination_exceptions"]
+    INVERTED = DEFAULT_CONFIG["inverted"]
+    MAX_DEPARTURES = DEFAULT_CONFIG["max_departures"]
+    DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
+    FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
+    USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
+    UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
+    AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
+    AP_FALLBACK_ENABLED = DEFAULT_CONFIG["ap_fallback_enabled"]
+    AP_SSID = DEFAULT_CONFIG["ap_ssid"]
+    AP_PASSWORD = DEFAULT_CONFIG["ap_password"]
+    DISPLAY_AP_PASSWORD = DEFAULT_CONFIG["display_ap_password"]
+    LAST_WIFI_SSID = DEFAULT_CONFIG["last_wifi_ssid"]
+    LAST_WIFI_PASSWORD = DEFAULT_CONFIG["last_wifi_password"]
+    KNOWN_WIFIS = DEFAULT_CONFIG["known_wifis"]
+
+def load_config(force: bool = False):
+    """Load configuration from config.json file (unless disabled via web module settings)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
     global INVERTED, MAX_DEPARTURES, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
@@ -230,7 +348,16 @@ def load_config():
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     global CONFIG_LAST_MODIFIED
     
+    # Always load web settings first so module flags take effect.
+    load_web_settings()
+
     with CONFIG_LOCK:
+        # If config.json usage is disabled, force defaults and do not read/write the file.
+        if not _is_module_enabled("config_json"):
+            _apply_default_config()
+            CONFIG_LAST_MODIFIED = 0
+            return
+
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
         
         # Check if config file exists
@@ -242,7 +369,7 @@ def load_config():
         try:
             # Check modification time
             mtime = os.path.getmtime(config_path)
-            if mtime == CONFIG_LAST_MODIFIED:
+            if (not force) and (mtime == CONFIG_LAST_MODIFIED):
                 return  # No changes, skip reload
             CONFIG_LAST_MODIFIED = mtime
             
@@ -290,6 +417,11 @@ def save_config():
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
     
     with CONFIG_LOCK:
+        load_web_settings()
+        if not _is_module_enabled("config_json"):
+            print("Config.json module is disabled; refusing to write config.json")
+            return False
+
         config = {
             "stations": STATIONS,
             "lines": LINES,
@@ -364,6 +496,11 @@ def update_config(new_config):
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     
     with CONFIG_LOCK:
+        load_web_settings()
+        if not _is_module_enabled("config_json"):
+            print("Config.json module is disabled; refusing to update config")
+            return False
+
         if "stations" in new_config:
             STATIONS = new_config["stations"] if isinstance(new_config["stations"], list) else [new_config["stations"]]
         if "lines" in new_config:
@@ -540,7 +677,7 @@ def _web_auth_configured() -> bool:
 
 
 def _ensure_web_auth_initialized():
-    """Ensure the SD-card-root auth file exists; generate if missing/empty."""
+    """Ensure the SD-card-root auth file exists; create if missing/empty."""
     try:
         path, user, pw, ok = _read_web_auth_file_cached()
         if ok and user and pw:
@@ -550,11 +687,11 @@ def _ensure_web_auth_initialized():
             return
 
         username = "admin"
-        generated_pw = secrets.token_urlsafe(18)
-        _write_web_auth_file(username, generated_pw)
-        print(f"WARNING: Web auth file missing/invalid; generated new credentials at {path}")
-        print(f"Generated web UI credentials: username={username} password={generated_pw}")
-        write_ui_event("Web UI", f"Login: {username} / {generated_pw}", duration_seconds=12)
+        default_pw = "password"
+        _write_web_auth_file(username, default_pw)
+        print(f"WARNING: Web auth file missing/invalid; created default credentials at {path}")
+        print(f"Default web UI credentials: username={username} password={default_pw}")
+        write_ui_event("Web UI", f"Login: {username} / {default_pw}", duration_seconds=12)
     except Exception as e:
         print(f"ERROR: failed to initialize web auth: {e}")
 
@@ -2919,6 +3056,11 @@ if FLASK_AVAILABLE:
 
     @app.before_request
     def _require_basic_auth():
+        # Allow fully unauthenticated operation if disabled.
+        load_web_settings()
+        if not _is_module_enabled("web_auth_basic"):
+            return None
+
         # If the auth file doesn't exist yet, create it (best-effort) so the UI is always protected.
         if not _web_auth_configured():
             _ensure_web_auth_initialized()
@@ -2937,16 +3079,33 @@ if FLASK_AVAILABLE:
     def index():
         """Serve the web configuration interface"""
         try:
+            mods = load_web_settings()
             print("Rendering index.html template...")
             template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'index.html')
             print(f"Template path: {template_path}")
             print(f"Template exists: {os.path.exists(template_path)}")
             if not os.path.exists(template_path):
                 return f"Template not found at: {template_path}", 404
-            result = render_template('index.html')
+            try:
+                file_size = os.path.getsize(template_path)
+            except Exception:
+                file_size = -1
+            print(f"Template file size: {file_size}")
+
+            result = render_template('index.html', modules=mods)
             print(f"Template rendered successfully, length: {len(result) if result else 0}")
             if not result or len(result) == 0:
-                return "Template rendered but result is empty", 500
+                # Fallback: serve raw file contents (this template is static HTML anyway).
+                try:
+                    with open(template_path, "r", encoding="utf-8") as f:
+                        raw = f.read()
+                    raw_len = len(raw) if raw else 0
+                    print(f"WARNING: render_template returned empty. Raw template length={raw_len}")
+                    if raw_len > 0:
+                        return Response(raw, mimetype="text/html")
+                    return f"Template rendered but result is empty (raw file length={raw_len}, size={file_size})", 500
+                except Exception as fe:
+                    return f"Template rendered but result is empty (size={file_size}). Fallback read failed: {fe}", 500
             return result
         except Exception as e:
             print(f"Error rendering template: {e}")
@@ -2954,15 +3113,58 @@ if FLASK_AVAILABLE:
             traceback.print_exc()
             return f"Error loading template: {str(e)}", 500
 
+    @app.route('/api/modules', methods=['GET'])
+    def get_modules():
+        """Get web module enable/disable flags."""
+        mods = load_web_settings()
+        return jsonify({
+            "success": True,
+            "modules": mods,
+            "path": _web_settings_path(),
+        })
+
+    @app.route('/api/modules', methods=['POST'])
+    def set_modules():
+        """Update web module enable/disable flags."""
+        try:
+            data = request.get_json() or {}
+            mods = data.get("modules", data)
+            if not isinstance(mods, dict):
+                return jsonify({"success": False, "error": "modules must be an object"}), 400
+
+            before = load_web_settings()
+            ok = save_web_settings(mods)
+            after = load_web_settings()
+            if not ok:
+                return jsonify({"success": False, "error": "Failed to save web settings"}), 500
+
+            # Side-effects
+            if after.get("web_auth_basic", True):
+                _ensure_web_auth_initialized()
+            if bool(before.get("config_json", True)) != bool(after.get("config_json", True)):
+                load_config(force=True)
+                global config_reload_needed
+                config_reload_needed = True
+
+            return jsonify({"success": True, "modules": after})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+
     @app.route('/api/config', methods=['GET'])
     def get_config():
         """Get current configuration"""
+        load_web_settings()
+        if not _is_module_enabled("config_json"):
+            load_config(force=True)
         return jsonify(get_config_dict())
 
     @app.route('/api/config', methods=['POST'])
     def set_config():
         """Update configuration"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("config_json"):
+                return jsonify({"success": False, "error": "config.json module is disabled"}), 403
             new_config = request.get_json()
             if update_config(new_config):
                 # Trigger config reload in main loop
@@ -2978,6 +3180,15 @@ if FLASK_AVAILABLE:
     def web_auth_status():
         """Get Basic Auth status (no secrets)."""
         try:
+            load_web_settings()
+            if not _is_module_enabled("web_auth_basic"):
+                return jsonify({
+                    "enabled": False,
+                    "source": "disabled",
+                    "path": None,
+                    "exists": False,
+                    "username": ""
+                })
             path, user, _, ok = _read_web_auth_file_cached()
             return jsonify({
                 "enabled": True,
@@ -2993,6 +3204,9 @@ if FLASK_AVAILABLE:
     def web_auth_update():
         """Update Basic Auth credentials or rotate to a new random password."""
         try:
+            load_web_settings()
+            if not _is_module_enabled("web_auth_basic"):
+                return jsonify({"success": False, "error": "web auth module is disabled"}), 403
             data = request.get_json() or {}
             if bool(data.get("reset", False)):
                 username = str(data.get("username", "") or "").strip() or "admin"
@@ -3026,6 +3240,9 @@ if FLASK_AVAILABLE:
     def wifi_status():
         """Get current WiFi status"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("iwconfig"):
+                return jsonify({"error": "iwconfig module is disabled"}), 404
             status = get_wifi_status()
             return jsonify(status)
         except Exception as e:
@@ -3035,6 +3252,9 @@ if FLASK_AVAILABLE:
     def wifi_scan():
         """Scan for available WiFi networks"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("iwconfig"):
+                return jsonify({"error": "iwconfig module is disabled"}), 404
             networks = scan_wifi_networks()
             # If it's a dict with error, return as is, otherwise return as list
             if isinstance(networks, dict) and 'error' in networks:
@@ -3047,6 +3267,9 @@ if FLASK_AVAILABLE:
     def wifi_connect():
         """Connect to a WiFi network"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("iwconfig"):
+                return jsonify({"success": False, "error": "iwconfig module is disabled"}), 404
             data = request.get_json()
             ssid = data.get('ssid')
             password = data.get('password', '')
@@ -3065,6 +3288,9 @@ if FLASK_AVAILABLE:
     def wifi_force_ap():
         """Force the device into Access Point mode by clearing WiFi config and rebooting"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("iwconfig"):
+                return jsonify({"success": False, "error": "iwconfig module is disabled"}), 404
             write_ui_event("WiFi", "Starting AP mode...", duration_seconds=6)
             # Run the force-ap-mode script in background (it will reboot)
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -3104,6 +3330,9 @@ if FLASK_AVAILABLE:
     def wifi_clear_known():
         """Clear all saved known WiFi networks and last-known WiFi credentials."""
         try:
+            load_web_settings()
+            if not _is_module_enabled("iwconfig"):
+                return jsonify({"success": False, "error": "iwconfig module is disabled"}), 404
             global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
             LAST_WIFI_SSID = ""
             LAST_WIFI_PASSWORD = ""
@@ -3118,6 +3347,9 @@ if FLASK_AVAILABLE:
     def services_status():
         """Get status of all OVBuddy services"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("systemctl_status"):
+                return jsonify({"error": "systemctl status module is disabled"}), 404
             services = ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon']
             status = {}
             for service in services:
@@ -3130,6 +3362,9 @@ if FLASK_AVAILABLE:
     def service_control(service_name, action):
         """Control a service (start, stop, restart)"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("systemctl_status"):
+                return jsonify({"success": False, "error": "systemctl status module is disabled"}), 404
             # Only allow control of OVBuddy services and avahi-daemon
             if service_name not in ['ovbuddy', 'ovbuddy-web', 'ovbuddy-wifi', 'avahi-daemon']:
                 return jsonify({"success": False, "error": "Invalid service name"}), 400
@@ -3214,6 +3449,9 @@ if FLASK_AVAILABLE:
     def shutdown_display():
         """Shutdown: Stop ovbuddy service, clear display, optionally display image"""
         try:
+            load_web_settings()
+            if not _is_module_enabled("shutdown"):
+                return jsonify({"success": False, "error": "shutdown module is disabled"}), 404
             write_ui_event("Shutdown", "Stopping service + clearing display...", duration_seconds=6)
             # Check if file was uploaded
             image_file = None
@@ -3360,6 +3598,9 @@ if FLASK_AVAILABLE:
     def reboot_device():
         """Reboot the Raspberry Pi (requires passwordless sudo)."""
         try:
+            load_web_settings()
+            if not _is_module_enabled("shutdown"):
+                return jsonify({"success": False, "error": "shutdown module is disabled"}), 404
             write_ui_event("Reboot", "Rebooting device...", duration_seconds=6)
             subprocess.Popen(
                 ['sudo', '-n', 'systemctl', 'reboot'],
@@ -3427,8 +3668,10 @@ def start_web_server():
         print("  Install with: pip3 install flask")
         return
 
-    # Ensure Basic Auth credentials exist before serving requests.
-    _ensure_web_auth_initialized()
+    # Ensure Basic Auth credentials exist before serving requests (only if enabled).
+    load_web_settings()
+    if _is_module_enabled("web_auth_basic"):
+        _ensure_web_auth_initialized()
     
     def run_server():
         try:
