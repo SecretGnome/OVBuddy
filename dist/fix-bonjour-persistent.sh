@@ -40,10 +40,11 @@ if [ "$CURRENT_HOSTNAME" != "ovbuddy" ]; then
     log "✓ Set hostname to ovbuddy"
 fi
 
-# Ensure avahi-daemon is installed
+# IMPORTANT: Do NOT run package installs/updates on boot.
+# If avahi-daemon is missing, log a warning and exit quickly.
 if ! command -v avahi-daemon >/dev/null 2>&1; then
-    log "⚠ avahi-daemon not found, attempting to install..."
-    apt-get update -qq && apt-get install -y avahi-daemon 2>&1 | logger -t fix-bonjour
+    log "⚠ avahi-daemon not found. Install it manually: sudo apt-get install -y avahi-daemon"
+    exit 0
 fi
 
 # Unmask avahi-daemon in case it was masked
@@ -58,7 +59,7 @@ else
     log "✓ Enabled avahi-daemon to start on boot"
 fi
 
-# Start or restart avahi-daemon to pick up changes
+# Start or restart avahi-daemon to pick up changes (best-effort, non-blocking)
 if systemctl is-active avahi-daemon >/dev/null 2>&1; then
     # Already running, restart it
     systemctl restart avahi-daemon 2>/dev/null || true
@@ -69,21 +70,8 @@ else
     log "✓ Started avahi-daemon"
 fi
 
-# Give it a moment to start, then check status
-sleep 2
-if systemctl is-active avahi-daemon >/dev/null 2>&1; then
-    log "✓ Bonjour/mDNS fix complete - avahi-daemon is running"
-else
-    log "⚠ avahi-daemon start triggered but not yet active"
-    # Try one more time without --no-block
-    systemctl start avahi-daemon 2>/dev/null || true
-    sleep 1
-    if systemctl is-active avahi-daemon >/dev/null 2>&1; then
-        log "✓ avahi-daemon is now running"
-    else
-        log "⚠ avahi-daemon failed to start, check logs: journalctl -u avahi-daemon"
-    fi
-fi
+# Don't wait here; boot speed matters more than synchronous verification.
+log "✓ Bonjour/mDNS fix complete (triggered avahi-daemon start/restart)"
 
 # Always exit successfully so we don't block the boot process
 exit 0

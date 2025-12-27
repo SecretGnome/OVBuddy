@@ -82,6 +82,17 @@ body {
     box-shadow: var(--glow);
 }
 
+.terminal-header-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.terminal-header-text {
+    min-width: 0;
+}
+
 .terminal-title {
     color: var(--text-primary);
     font-size: 28px;
@@ -143,6 +154,32 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
+}
+
+.terminal-window-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.header-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+    user-select: none;
+}
+
+.header-toggle input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+}
+
+.terminal-window.module-disabled .header-toggle {
+    color: var(--warning-color);
 }
 
 .terminal-window-title {
@@ -590,10 +627,7 @@ button.warning:hover {
 
 /* Theme Toggle Button */
 .theme-toggle {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    z-index: 1000;
+    position: static;
     background-color: var(--bg-secondary);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
@@ -662,10 +696,15 @@ button.warning:hover {
     }
     
     .theme-toggle {
-        bottom: 10px;
-        right: 10px;
         padding: 10px 16px;
         font-size: 13px;
+        width: 100%;
+        justify-content: center;
+    }
+
+    .terminal-header-top {
+        flex-direction: column;
+        align-items: stretch;
     }
 }
 

@@ -10,14 +10,18 @@
     <div class="container">
         <!-- Header -->
         <div class="terminal-header">
-            <h1 class="terminal-title">OVBuddy Terminal Interface</h1>
-            <p class="terminal-subtitle">System Configuration & Management Console</p>
+            <div class="terminal-header-top">
+                <div class="terminal-header-text">
+                    <h1 class="terminal-title">OVBuddy Terminal Interface</h1>
+                    <p class="terminal-subtitle">System Configuration & Management Console</p>
+                </div>
 
-            <!-- Theme Toggle Button -->
-            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">
-                <span id="themeIcon">☀️</span>
-                <span id="themeText">Bright Theme</span>
-            </button>
+                <!-- Theme Toggle Button -->
+                <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">
+                    <span id="themeIcon">☀️</span>
+                    <span id="themeText">Bright Theme</span>
+                </button>
+            </div>
         </div>
 
         <!-- Message Display -->
@@ -29,67 +33,15 @@
             <button id="restartServiceButton" class="snackbar-button" onclick="restartServiceFromSnackbar()">Restart Service</button>
         </div>
 
-        <!-- Modules Section -->
-        <div class="terminal-window" id="modulesWindow">
-            <div class="terminal-window-header">
-                <h2 class="terminal-window-title">modules</h2>
-                <div class="terminal-window-controls">
-                    <span class="terminal-control close"></span>
-                    <span class="terminal-control minimize"></span>
-                    <span class="terminal-control maximize"></span>
-                </div>
-            </div>
-            <div class="terminal-window-body">
-                <form id="modulesForm">
-                    <div class="two-column-grid">
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="module_web_auth_basic">
-                                web auth (Basic)
-                            </label>
-                            <div class="help-text">When disabled: web UI is public and auth is not used</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="module_config_json">
-                                config.json
-                            </label>
-                            <div class="help-text">When disabled: config.json is ignored and defaults are used</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="module_systemctl_status">
-                                systemctl status
-                            </label>
-                            <div class="help-text">When disabled: service status/control endpoints are disabled</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="module_iwconfig">
-                                iwconfig
-                            </label>
-                            <div class="help-text">When disabled: WiFi management endpoints are disabled</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="module_shutdown">
-                                shutdown
-                            </label>
-                            <div class="help-text">When disabled: shutdown/reboot endpoints are disabled</div>
-                        </div>
-                        <div class="form-group span-2">
-                            <button type="submit">Save Module Settings</button>
-                        </div>
-                    </div>
-                </form>
-            </div>
-        </div>
-
         <!-- Web Authentication Section -->
         <div class="terminal-window" id="webAuthWindow" data-module="web_auth_basic">
             <div class="terminal-window-header">
                 <h2 class="terminal-window-title">web auth (Basic) <span class="module-badge" data-module-badge="web_auth_basic">DISABLED</span></h2>
                 <div class="terminal-window-controls">
+                    <label class="header-toggle">
+                        <input type="checkbox" data-module-toggle="web_auth_basic">
+                        <span>Enabled</span>
+                    </label>
                     <span class="terminal-control close"></span>
                     <span class="terminal-control minimize"></span>
                     <span class="terminal-control maximize"></span>
@@ -132,6 +84,10 @@
             <div class="terminal-window-header">
                 <h2 class="terminal-window-title">config.json <span class="module-badge" data-module-badge="config_json">DISABLED</span></h2>
                 <div class="terminal-window-controls">
+                    <label class="header-toggle">
+                        <input type="checkbox" data-module-toggle="config_json">
+                        <span>Enabled</span>
+                    </label>
                     <span class="terminal-control close"></span>
                     <span class="terminal-control minimize"></span>
                     <span class="terminal-control maximize"></span>
@@ -256,6 +212,10 @@
             <div class="terminal-window-header">
                 <h2 class="terminal-window-title">systemctl status <span class="module-badge" data-module-badge="systemctl_status">DISABLED</span></h2>
                 <div class="terminal-window-controls">
+                    <label class="header-toggle">
+                        <input type="checkbox" data-module-toggle="systemctl_status">
+                        <span>Enabled</span>
+                    </label>
                     <span class="terminal-control close"></span>
                     <span class="terminal-control minimize"></span>
                     <span class="terminal-control maximize"></span>
@@ -263,6 +223,13 @@
             </div>
             <div class="terminal-window-body">
                 <div id="servicesSection">
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="sshEnableOnBoot">
+                            SSH: start on boot
+                        </label>
+                        <div class="help-text">Toggles whether `ssh.service` is enabled (systemctl enable/disable)</div>
+                    </div>
                     <div id="servicesStatus" class="services-grid">
                         <p style="text-align: center;">Loading service status...</p>
                     </div>
@@ -279,6 +246,10 @@
             <div class="terminal-window-header">
                 <h2 class="terminal-window-title">iwconfig <span class="module-badge" data-module-badge="iwconfig">DISABLED</span></h2>
                 <div class="terminal-window-controls">
+                    <label class="header-toggle">
+                        <input type="checkbox" data-module-toggle="iwconfig">
+                        <span>Enabled</span>
+                    </label>
                     <span class="terminal-control close"></span>
                     <span class="terminal-control minimize"></span>
                     <span class="terminal-control maximize"></span>
@@ -313,6 +284,10 @@
             <div class="terminal-window-header">
                 <h2 class="terminal-window-title">shutdown <span class="module-badge" data-module-badge="shutdown">DISABLED</span></h2>
                 <div class="terminal-window-controls">
+                    <label class="header-toggle">
+                        <input type="checkbox" data-module-toggle="shutdown">
+                        <span>Enabled</span>
+                    </label>
                     <span class="terminal-control close"></span>
                     <span class="terminal-control minimize"></span>
                     <span class="terminal-control maximize"></span>

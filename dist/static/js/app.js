@@ -4,6 +4,10 @@
 let selectedNetwork = null;
 let selectedNetworkElement = null;
 let MODULES = null;
+let _CONFIG_INIT = false;
+let _WEBAUTH_INIT = false;
+let _SERVICES_INIT = false;
+let _WIFI_INIT = false;
 
 function getDefaultModules() {
     return {
@@ -32,6 +36,22 @@ async function loadModules() {
     return MODULES;
 }
 
+async function setModuleEnabled(key, enabled) {
+    const payload = {};
+    payload[key] = !!enabled;
+    const r = await fetch('/api/modules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modules: payload })
+    });
+    const data = await r.json();
+    if (!data || !data.success) {
+        throw new Error(data?.error || 'Failed to save module setting');
+    }
+    MODULES = data.modules || MODULES || getDefaultModules();
+    return MODULES;
+}
+
 function applyModuleVisibility() {
     const windows = document.querySelectorAll('.terminal-window[data-module]');
     windows.forEach(win => {
@@ -52,56 +72,44 @@ function applyModuleVisibility() {
     });
 }
 
-function populateModulesForm() {
-    const mapping = [
-        ['module_web_auth_basic', 'web_auth_basic'],
-        ['module_config_json', 'config_json'],
-        ['module_systemctl_status', 'systemctl_status'],
-        ['module_iwconfig', 'iwconfig'],
-        ['module_shutdown', 'shutdown']
-    ];
-    mapping.forEach(([id, key]) => {
-        const el = document.getElementById(id);
-        if (el) el.checked = moduleEnabled(key);
+function syncHeaderToggles() {
+    document.querySelectorAll('input[data-module-toggle]').forEach((el) => {
+        const key = el.getAttribute('data-module-toggle');
+        el.checked = moduleEnabled(key);
     });
 }
 
-function collectModulesForm() {
-    const getChecked = (id, fallback) => {
-        const el = document.getElementById(id);
-        return el ? !!el.checked : fallback;
-    };
-    const defaults = getDefaultModules();
-    return {
-        web_auth_basic: getChecked('module_web_auth_basic', defaults.web_auth_basic),
-        config_json: getChecked('module_config_json', defaults.config_json),
-        systemctl_status: getChecked('module_systemctl_status', defaults.systemctl_status),
-        iwconfig: getChecked('module_iwconfig', defaults.iwconfig),
-        shutdown: getChecked('module_shutdown', defaults.shutdown)
-    };
-}
+function initModulesFromToggles() {
+    document.querySelectorAll('input[data-module-toggle]').forEach((el) => {
+        el.addEventListener('change', async () => {
+            const key = el.getAttribute('data-module-toggle');
+            const target = !!el.checked;
+            el.disabled = true;
+            try {
+                await setModuleEnabled(key, target);
+                applyModuleVisibility();
+                syncHeaderToggles();
 
-async function saveModules(event) {
-    event.preventDefault();
-    const mods = collectModulesForm();
-    try {
-        const r = await fetch('/api/modules', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modules: mods })
+                // Auth changes should reload to avoid confusing 401s / stale state
+                if (key === 'web_auth_basic') {
+                    showMessage('Web auth setting changed. Reloading... [OK]', 'success');
+                    setTimeout(() => window.location.reload(), 500);
+                    return;
+                }
+
+                // Bring newly-enabled modules online without requiring a full reload.
+                maybeInitEnabledModules();
+                showMessage('Module setting saved [OK]', 'success');
+            } catch (e) {
+                console.error('Error saving module toggle:', e);
+                // Revert toggle UI
+                el.checked = !target;
+                showMessage('Error: ' + (e?.message || 'Failed to save module setting'), 'error');
+            } finally {
+                el.disabled = false;
+            }
         });
-        const data = await r.json();
-        if (data && data.success) {
-            showMessage('Module settings saved. Reloading... [OK]', 'success');
-            // Reload to re-run auth + apply server-side behavior changes cleanly
-            setTimeout(() => window.location.reload(), 500);
-        } else {
-            showMessage('Error: ' + (data.error || 'Failed to save module settings'), 'error');
-        }
-    } catch (e) {
-        console.error('Error saving modules:', e);
-        showMessage('Error saving module settings', 'error');
-    }
+    });
 }
 
 // Utility Functions
@@ -628,6 +636,37 @@ function forceApMode() {
 }
 
 // Service Management
+function updateSshBootToggleFromStatus(statusMap) {
+    const cb = document.getElementById('sshEnableOnBoot');
+    if (!cb) return;
+    if (!moduleEnabled('systemctl_status')) {
+        cb.disabled = true;
+        return;
+    }
+    const ssh = statusMap ? statusMap['ssh'] : null;
+    if (!ssh) {
+        cb.disabled = true;
+        cb.checked = false;
+        return;
+    }
+    cb.disabled = false;
+    cb.checked = !!ssh.enabled;
+}
+
+function onSshBootToggleChanged() {
+    const cb = document.getElementById('sshEnableOnBoot');
+    if (!cb) return;
+    if (!moduleEnabled('systemctl_status')) {
+        showMessage('systemctl status module is disabled', 'error');
+        cb.checked = false;
+        cb.disabled = true;
+        return;
+    }
+    const action = cb.checked ? 'enable' : 'disable';
+    // Use the same confirmation + refresh behavior as other service actions.
+    controlService('ssh', action);
+}
+
 function refreshServicesStatus() {
     console.log('Refreshing services status...');
     
@@ -643,6 +682,7 @@ function refreshServicesStatus() {
                 const isRunning = status.active;
                 const statusClass = isRunning ? 'running' : 'stopped';
                 const statusText = status.status || 'unknown';
+                const isEnabled = !!status.enabled;
                 
                 html += `
                     <div class="service-status">
@@ -651,7 +691,7 @@ function refreshServicesStatus() {
                             <div class="service-name">${serviceName}</div>
                             <div class="service-details">
                                 Status: ${statusText}
-                                ${status.enabled ? ' | Enabled on boot' : ' | Disabled'}
+                                ${isEnabled ? ' | Enabled on boot' : ' | Disabled'}
                                 ${status.uptime ? ' | Since: ' + status.uptime : ''}
                                 ${status.cpu ? ' | CPU: ' + status.cpu : ''}
                                 ${status.memory ? ' | Memory: ' + status.memory : ''}
@@ -663,16 +703,22 @@ function refreshServicesStatus() {
                                  <button onclick="controlService('${serviceName}', 'stop')" class="danger">Stop</button>` :
                                 `<button onclick="controlService('${serviceName}', 'start')">Start</button>`
                             }
+                            ${isEnabled ?
+                                `<button onclick="controlService('${serviceName}', 'disable')" class="secondary">Disable</button>` :
+                                `<button onclick="controlService('${serviceName}', 'enable')" class="secondary">Enable</button>`
+                            }
                         </div>
                     </div>
                 `;
             }
             
             statusDiv.innerHTML = html;
+            updateSshBootToggleFromStatus(data);
         })
         .catch(error => {
             console.error('Error loading service status:', error);
             statusDiv.innerHTML = '<p style="color: var(--error-color); text-align: center;">Error loading service status</p>';
+            updateSshBootToggleFromStatus(null);
         });
 }
 
@@ -1081,37 +1127,10 @@ document.addEventListener('DOMContentLoaded', function() {
     (async () => {
         await loadModules();
         applyModuleVisibility();
-        populateModulesForm();
+        syncHeaderToggles();
+        initModulesFromToggles();
 
-        const modulesForm = document.getElementById('modulesForm');
-        if (modulesForm) {
-            modulesForm.addEventListener('submit', saveModules);
-        }
-
-        // Load initial data (only for enabled modules)
-        if (moduleEnabled('config_json')) {
-            loadConfiguration();
-            const configForm = document.getElementById('configForm');
-            if (configForm) {
-                configForm.addEventListener('submit', saveConfiguration);
-            }
-        }
-
-        if (moduleEnabled('web_auth_basic')) {
-            loadWebAuthStatus();
-            const webAuthForm = document.getElementById('webAuthForm');
-            if (webAuthForm) {
-                webAuthForm.addEventListener('submit', saveWebAuth);
-            }
-        }
-
-        if (moduleEnabled('iwconfig')) {
-            refreshWifiStatus();
-        }
-
-        if (moduleEnabled('systemctl_status')) {
-            refreshServicesStatus();
-        }
+        maybeInitEnabledModules();
 
         // Always-on
         loadVersionInfo();
@@ -1137,4 +1156,42 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 });
+
+function maybeInitEnabledModules() {
+    // config.json
+    if (moduleEnabled('config_json') && !_CONFIG_INIT) {
+        _CONFIG_INIT = true;
+        loadConfiguration();
+        const configForm = document.getElementById('configForm');
+        if (configForm) {
+            configForm.addEventListener('submit', saveConfiguration);
+        }
+    }
+
+    // web auth
+    if (moduleEnabled('web_auth_basic') && !_WEBAUTH_INIT) {
+        _WEBAUTH_INIT = true;
+        loadWebAuthStatus();
+        const webAuthForm = document.getElementById('webAuthForm');
+        if (webAuthForm) {
+            webAuthForm.addEventListener('submit', saveWebAuth);
+        }
+    }
+
+    // wifi
+    if (moduleEnabled('iwconfig') && !_WIFI_INIT) {
+        _WIFI_INIT = true;
+        refreshWifiStatus();
+    }
+
+    // services
+    if (moduleEnabled('systemctl_status') && !_SERVICES_INIT) {
+        _SERVICES_INIT = true;
+        refreshServicesStatus();
+        const sshCb = document.getElementById('sshEnableOnBoot');
+        if (sshCb) {
+            sshCb.addEventListener('change', onSshBootToggleChanged);
+        }
+    }
+}
 
