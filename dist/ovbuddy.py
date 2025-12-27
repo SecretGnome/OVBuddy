@@ -3601,6 +3601,40 @@ if FLASK_AVAILABLE:
             load_web_settings()
             if not _is_module_enabled("shutdown"):
                 return jsonify({"success": False, "error": "shutdown module is disabled"}), 404
+
+            # Stop services first (best-effort). We intentionally do NOT stop ovbuddy-web here,
+            # otherwise this request may never return a response.
+            for svc in ['ovbuddy', 'ovbuddy-wifi', 'fix-bonjour', 'avahi-daemon']:
+                try:
+                    control_service(svc, 'stop')
+                except Exception:
+                    pass
+
+            # Show a clear message on the e-ink screen (directly), then reboot.
+            # This is intentionally done after stopping services so nothing else overwrites the screen.
+            try:
+                if TEST_MODE:
+                    render_action_screen(None, title="Rebooting...", message="Please wait", test_mode=True)
+                else:
+                    try:
+                        import epd2in13_V4
+                    except Exception as e:
+                        epd2in13_V4 = None
+                        print(f"Warning: display library not available for reboot screen: {e}")
+
+                    if epd2in13_V4 is not None:
+                        epd = epd2in13_V4.EPD()
+                        epd.init()
+                        render_action_screen(epd, title="Rebooting...", message="Please wait", test_mode=False)
+                        # Put display to sleep to reduce power/ghosting while rebooting
+                        try:
+                            epd.sleep()
+                        except Exception:
+                            pass
+            except Exception as e:
+                # Don't block reboot if display update fails
+                print(f"Warning: failed to render reboot screen: {e}")
+
             write_ui_event("Reboot", "Rebooting device...", duration_seconds=6)
             subprocess.Popen(
                 ['sudo', '-n', 'systemctl', 'reboot'],
