@@ -2,6 +2,8 @@
 
 OVBuddy is a Swiss public transport departure display for Raspberry Pi with a Waveshare 2.13" e-ink screen.
 
+![Technical illustration of the device this software can be used on.](assets/device.jpg)
+
 
 ## Quick start
 
@@ -24,6 +26,10 @@ cp setup.env.example setup.env
 ### 2) Boot the Pi
 
 Insert the SD card and power on. Wait ~5–6 minutes for first boot + automatic reboot.
+
+You should see something like this when public transport lines have been configured.
+
+![Mocked testing data](assets/test-output.jpg)
 
 ### 3) Deploy OVBuddy
 
