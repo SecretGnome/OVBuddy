@@ -1,0 +1,9 @@
+{
+  "modules": {
+    "web_auth_basic": true,
+    "config_json": true,
+    "systemctl_status": true,
+    "iwconfig": true,
+    "shutdown": true
+  }
+}

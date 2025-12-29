@@ -1,6 +1,6 @@
 {
-  "stations": ["Zürich Saalsporthalle", "Zürich, Saalsporthalle"],
-  "lines": ["S4", "T13", "T5"],
+  "stations": ["Zürich Seebach"],
+  "lines": ["S6", "T14", "T51", "B768"],
   "refresh_interval": 20,
   "config_display_duration": 6,
   "qr_code_display_duration": 10,

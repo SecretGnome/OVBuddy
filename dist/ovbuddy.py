@@ -14,6 +14,9 @@ import subprocess
 import uuid
 import hmac
 import secrets
+import shutil
+import textwrap
+import atexit
 from datetime import datetime, timedelta
 
 # Optional imports for web server
@@ -52,9 +55,444 @@ if not FLASK_AVAILABLE or not ZEROCONF_AVAILABLE:
 # Test mode: set TEST_MODE=1 environment variable to run without display hardware
 TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
 
-if not TEST_MODE:
-    from PIL import Image, ImageDraw, ImageFont
-    import epd2in13_V4  # local file in the same folder
+# Output backend selection:
+# - hardware: Waveshare eInk via epd2in13_V4 (Pi)
+# - terminal: ANSI "screen" in terminal (macOS / dev)
+# - sim: render the same PIL screens but write to a PNG file (future: nicer viewer)
+OUTPUT_MODE = (os.getenv("OVBUDDY_OUTPUT") or "").strip().lower()
+if not OUTPUT_MODE:
+    # Sensible default: if TEST_MODE, prefer terminal; otherwise hardware.
+    OUTPUT_MODE = "terminal" if TEST_MODE else "hardware"
+if OUTPUT_MODE not in ("hardware", "terminal", "sim"):
+    print(f"Warning: invalid OVBUDDY_OUTPUT={OUTPUT_MODE!r}; falling back to 'hardware'")
+    OUTPUT_MODE = "hardware"
+
+# Optional PIL for QR + eInk rendering (hardware + sim)
+PIL_AVAILABLE = False
+try:
+    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
+
+# Optional hardware driver (Pi only)
+EPD_AVAILABLE = False
+if OUTPUT_MODE == "hardware" and not TEST_MODE:
+    try:
+        import epd2in13_V4  # type: ignore  # local file in the same folder
+        EPD_AVAILABLE = True
+    except Exception as e:
+        EPD_AVAILABLE = False
+        print(f"Warning: e-ink driver not available ({e}); falling back to terminal output.")
+        OUTPUT_MODE = "terminal"
+
+# Terminal UI mode: in TEST_MODE, render a "screen-like" layout in the terminal.
+TERMINAL_UI = os.getenv("OVBUDDY_TERMINAL_UI", "0") == "1"
+TERMINAL_ASCII = os.getenv("OVBUDDY_TERMINAL_ASCII", "0") == "1"
+TERMINAL_COLOR = os.getenv("OVBUDDY_TERMINAL_COLOR", "1") != "0"
+
+def _terminal_enabled() -> bool:
+    # Enabled when using the terminal output backend, or when explicitly requested.
+    if OUTPUT_MODE != "terminal" and not TERMINAL_UI:
+        return False
+    try:
+        if not sys.stdout.isatty():
+            return False
+        term = (os.getenv("TERM") or "").strip().lower()
+        if not term or term == "dumb":
+            return False
+        return True
+    except Exception:
+        return False
+
+def _term_home_clear():
+    """Clear screen + move cursor home (best-effort)."""
+    try:
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+def _term_hide_cursor(hide: bool = True):
+    try:
+        sys.stdout.write("\033[?25l" if hide else "\033[?25h")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+def _term_box_lines(
+    content_lines,
+    title_left: str = "",
+    title_right: str = "",
+    width=None,
+    height=None,
+):
+    """Return a list of strings representing a boxed 'screen'."""
+    cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+    # Keep it comfortably within typical terminal widths.
+    w = width if isinstance(width, int) and width >= 30 else min(max(48, cols - 2), 90)
+    inner_w = w - 2
+
+    # Reasonable default height: enough to look like a small display but not fill the whole terminal.
+    if isinstance(height, int) and height >= 8:
+        h = height
+    else:
+        h = min(22, max(14, shutil.get_terminal_size(fallback=(80, 24)).lines - 2))
+    inner_h = h - 2
+
+    if TERMINAL_ASCII:
+        tl, tr, bl, br, hz, vt = "+", "+", "+", "+", "-", "|"
+    else:
+        tl, tr, bl, br, hz, vt = "┌", "┐", "└", "┘", "─", "│"
+
+    def fit(s: str, max_len: int) -> str:
+        s = safe_ascii(str(s))
+        return s[:max_len] if len(s) > max_len else s
+
+    # Header line (within the box)
+    left = fit(title_left, inner_w)
+    right = fit(title_right, inner_w)
+    if right:
+        space = inner_w - len(left) - len(right)
+        if space < 1:
+            # Truncate left first.
+            left = fit(left, max(0, inner_w - len(right) - 1))
+            space = inner_w - len(left) - len(right)
+        header = left + (" " * max(1, space)) + right
+    else:
+        header = left.ljust(inner_w)
+
+    # Prepare body content: wrap long lines, clamp to height.
+    body = []
+    for line in content_lines or []:
+        line = safe_ascii("" if line is None else str(line))
+        if not line:
+            body.append("")
+            continue
+        wrapped = textwrap.wrap(line, width=inner_w) or [""]
+        body.extend(wrapped)
+
+    # Ensure body fits inside the box, leaving 1 line for header and 1 for divider.
+    body_room = max(0, inner_h - 2)
+    body = body[:body_room]
+    while len(body) < body_room:
+        body.append("")
+
+    divider = (hz * inner_w)
+    lines = [f"{tl}{hz * inner_w}{tr}", f"{vt}{header}{vt}", f"{vt}{divider}{vt}"]
+    for b in body:
+        lines.append(f"{vt}{b.ljust(inner_w)}{vt}")
+    lines.append(f"{bl}{hz * inner_w}{br}")
+    return lines
+
+def _term_render_screen(title_left: str, title_right: str, content_lines, inverted: bool = False):
+    if not _terminal_enabled():
+        return False
+    _term_home_clear()
+    _term_hide_cursor(True)
+    lines = _term_box_lines(content_lines, title_left=title_left, title_right=title_right)
+    if inverted and TERMINAL_COLOR:
+        sys.stdout.write("\033[7m")
+    sys.stdout.write("\n".join(lines) + "\n")
+    if inverted and TERMINAL_COLOR:
+        sys.stdout.write("\033[0m")
+    sys.stdout.flush()
+    return True
+
+def _term_restore():
+    """Restore terminal state (cursor + attributes). Safe to call multiple times."""
+    try:
+        _term_hide_cursor(False)
+        sys.stdout.write("\033[0m")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+# Always register restore; it is safe even when terminal UI isn't used.
+atexit.register(_term_restore)
+
+class DisplayBackend:
+    """Abstract display backend: hardware, terminal, or simulator."""
+    name = "base"
+    supports_pil = False
+
+    def clear(self, inverted=False):
+        return None
+
+    def show_text(self, title_left, title_right, content_lines, inverted=False):
+        # Default fallback: print.
+        try:
+            print(str(title_left))
+            for ln in content_lines or []:
+                print(str(ln))
+        except Exception:
+            pass
+        return None
+
+    def show_pil(self, image, **_kwargs):
+        # Not supported by default.
+        return None
+
+    def sleep(self):
+        return None
+
+    def pump(self):
+        """Process UI events for backends that need it (e.g., simulator window)."""
+        return None
+
+
+class TerminalDisplayBackend(DisplayBackend):
+    name = "terminal"
+    supports_pil = False
+
+    def clear(self, inverted=False):
+        if _terminal_enabled():
+            _term_home_clear()
+        return None
+
+    def show_text(self, title_left, title_right, content_lines, inverted=False):
+        if _terminal_enabled():
+            _term_render_screen(title_left, title_right, content_lines, inverted=bool(inverted))
+            return None
+        # Non-tty fallback.
+        print(f"{title_left} {title_right}".strip())
+        for ln in content_lines or []:
+            print(ln)
+        return None
+
+    def show_pil(self, image, **_kwargs):
+        # Terminal backend doesn't render images yet; show a placeholder.
+        self.show_text("OVBuddy", time.strftime("%H:%M"), ["(image screen)"], inverted=False)
+        return None
+
+
+class SimDisplayBackend(DisplayBackend):
+    """PIL-backed simulator: writes each frame to a PNG."""
+    name = "sim"
+    supports_pil = True
+
+    def __init__(self, out_path):
+        self.out_path = out_path
+        self._notified = False
+        self._window_enabled = (os.getenv("OVBUDDY_SIM_WINDOW", "0") == "1")
+        self._scale = 3
+        try:
+            self._scale = max(1, int(os.getenv("OVBUDDY_SIM_SCALE", "3")))
+        except Exception:
+            self._scale = 3
+        self._tk_root = None
+        self._tk_label = None
+        self._tk_img = None
+
+    def clear(self, inverted=False):
+        # No-op for now.
+        return None
+
+    def _ensure_window(self):
+        if not self._window_enabled:
+            return
+        if self._tk_root is not None:
+            return
+        # Try importing tkinter first (may fail on some systems)
+        try:
+            import tkinter as tk  # type: ignore
+        except Exception as e:
+            print(f"[sim] window disabled (tkinter not available): {e}")
+            self._window_enabled = False
+            return
+
+        # Try importing PIL ImageTk (this can fail on some macOS/PIL combinations)
+        try:
+            from PIL import ImageTk  # type: ignore
+        except Exception as e:
+            print(f"[sim] window disabled (PIL ImageTk not available): {e}")
+            print("[sim] continuing with PNG output only")
+            self._window_enabled = False
+            return
+
+        # Try creating the Tk root (can fail on some macOS versions)
+        # On macOS, Tkinter can sometimes abort with system-level errors
+        # We'll try to catch this, but if it still aborts, the user can disable the window
+        try:
+            # Set up error handling before creating Tk root
+            import sys
+            old_excepthook = sys.excepthook
+            def safe_excepthook(exc_type, exc_value, exc_traceback):
+                if exc_type is not SystemExit:
+                    print(f"[sim] window creation failed: {exc_type.__name__}: {exc_value}")
+                    print("[sim] continuing with PNG output only (window disabled)")
+                return old_excepthook(exc_type, exc_value, exc_traceback)
+            sys.excepthook = safe_excepthook
+
+            try:
+                root = tk.Tk()
+                root.title("OVBuddy – eInk Simulator")
+                root.resizable(False, False)
+                # Try to set window icon/attributes (may fail on some macOS versions)
+                try:
+                    root.withdraw()  # Hide initially to avoid flicker
+                except Exception:
+                    pass
+                label = tk.Label(root)
+                label.pack()
+                self._tk_root = root
+                self._tk_label = label
+                self._ImageTk = ImageTk  # stash module for later
+                try:
+                    root.deiconify()  # Show after setup
+                except Exception:
+                    pass
+                # Restore original excepthook on success
+                sys.excepthook = old_excepthook
+            except (Exception, SystemError, RuntimeError, SystemExit) as e:
+                # Catch all exceptions including system-level errors
+                sys.excepthook = old_excepthook
+                print(f"[sim] window creation failed: {e}")
+                print("[sim] continuing with PNG output only (window disabled)")
+                print("[sim] Tip: Set OVBUDDY_SIM_WINDOW=0 to disable window from the start")
+                self._window_enabled = False
+                self._tk_root = None
+                self._tk_label = None
+        except Exception as e:
+            # Fallback: if even the excepthook setup fails, just disable window
+            print(f"[sim] window setup failed: {e}")
+            print("[sim] continuing with PNG output only (window disabled)")
+            print("[sim] Tip: Set OVBUDDY_SIM_WINDOW=0 to disable window from the start")
+            self._window_enabled = False
+            self._tk_root = None
+            self._tk_label = None
+
+    def show_pil(self, image, **_kwargs):
+        if not PIL_AVAILABLE:
+            raise RuntimeError("PIL not available; cannot render sim output")
+        try:
+            # Ensure mode that saves nicely.
+            img = image
+            if hasattr(img, "mode") and img.mode not in ("1", "L", "RGB"):
+                img = img.convert("RGB")
+            img.save(self.out_path)
+            if not self._notified:
+                print(f"[sim] writing frames to: {self.out_path}")
+                self._notified = True
+
+            # Optional: show in a live window
+            self._ensure_window()
+            if self._window_enabled and self._tk_root is not None and self._tk_label is not None:
+                try:
+                    show = img
+                    # Enlarge for comfortable viewing; keep pixels crisp.
+                    if self._scale != 1:
+                        try:
+                            show = show.resize((show.size[0] * self._scale, show.size[1] * self._scale), resample=Image.NEAREST)
+                        except Exception:
+                            show = show.resize((show.size[0] * self._scale, show.size[1] * self._scale))
+                    try:
+                        photo = self._ImageTk.PhotoImage(show)
+                        self._tk_img = photo  # keep ref alive
+                        self._tk_label.configure(image=photo)
+                        self._tk_root.update_idletasks()
+                        self._tk_root.update()
+                    except Exception as e:
+                        # ImageTk.PhotoImage can fail on some macOS/PIL combinations
+                        print(f"[sim] window update failed: {e}")
+                        print("[sim] continuing with PNG output only")
+                        self._window_enabled = False
+                        self._tk_root = None
+                        self._tk_label = None
+                except Exception as e:
+                    print(f"[sim] window rendering failed: {e}")
+                    print("[sim] continuing with PNG output only")
+                    self._window_enabled = False
+                    self._tk_root = None
+                    self._tk_label = None
+        except Exception as e:
+            print(f"[sim] failed to write frame: {e}")
+        return None
+
+    def show_text(self, title_left, title_right, content_lines, inverted=False):
+        # Render text as terminal for now; sim primarily uses show_pil.
+        TerminalDisplayBackend().show_text(title_left, title_right, content_lines, inverted=inverted)
+        return None
+
+    def pump(self):
+        if self._window_enabled and self._tk_root is not None:
+            try:
+                self._tk_root.update_idletasks()
+                self._tk_root.update()
+            except Exception:
+                # If the user closes the window, just stop pumping.
+                self._window_enabled = False
+        return None
+
+
+class HardwareEinkBackend(DisplayBackend):
+    name = "hardware"
+    supports_pil = True
+
+    def __init__(self, epd):
+        self.epd = epd
+
+    def clear(self, inverted=False):
+        try:
+            clear_color = 0x00 if inverted else 0xFF
+            self.epd.Clear(clear_color)
+        except Exception:
+            pass
+
+    def show_pil(self, image, partial=False, debug_line="", debug_status="", **_kwargs):
+        """Display a PIL image. If partial=True, use partial refresh when available."""
+        try:
+            image_buffer = self.epd.getbuffer(image)
+            if partial and hasattr(self.epd, "displayPartial"):
+                self.epd.displayPartial(image_buffer)
+            else:
+                self.epd.display(image_buffer)
+        except OSError as e:
+            # SPI connection error: attempt to re-init once, then retry full refresh.
+            try:
+                print(f"SPI error, reinitializing display: {e}")
+                self.epd.init()
+                image_buffer = self.epd.getbuffer(image)
+                self.epd.display(image_buffer)
+            except Exception as e2:
+                print(f"Failed to reinitialize display: {e2}")
+                raise
+        except Exception as e:
+            if debug_line or debug_status:
+                print(f"Error displaying image ({debug_line}{debug_status}): {e}")
+            else:
+                print(f"Error displaying image: {e}")
+
+    def sleep(self):
+        try:
+            self.epd.sleep()
+        except Exception:
+            pass
+
+
+def create_display_backend():
+    """Create the selected display backend. Returns a DisplayBackend instance."""
+    mode = OUTPUT_MODE
+    if mode == "terminal":
+        return TerminalDisplayBackend()
+    if mode == "sim":
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        out_path = os.getenv("OVBUDDY_SIM_OUT") or os.path.join(current_dir, "sim-output.png")
+        return SimDisplayBackend(out_path)
+
+    # hardware
+    if TEST_MODE:
+        print("Warning: TEST_MODE=1 with OVBUDDY_OUTPUT=hardware; using terminal backend instead.")
+        return TerminalDisplayBackend()
+    if not EPD_AVAILABLE:
+        print("Warning: EPD driver not available; using terminal backend instead.")
+        return TerminalDisplayBackend()
+    try:
+        epd = epd2in13_V4.EPD()
+    except Exception as e:
+        print(f"Warning: failed to construct EPD object ({e}); using terminal backend.")
+        return TerminalDisplayBackend()
+    return HardwareEinkBackend(epd)
 
 # --------------------------
 # VERSION
@@ -347,7 +785,7 @@ def load_config(force: bool = False):
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     global CONFIG_LAST_MODIFIED
-    
+
     # Always load web settings first so module flags take effect.
     load_web_settings()
 
@@ -359,7 +797,7 @@ def load_config(force: bool = False):
             return
 
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
-        
+
         # Check if config file exists
         if not os.path.exists(config_path):
             print(f"Config file not found, using defaults and creating {CONFIG_FILE}")
@@ -372,10 +810,10 @@ def load_config(force: bool = False):
             if (not force) and (mtime == CONFIG_LAST_MODIFIED):
                 return  # No changes, skip reload
             CONFIG_LAST_MODIFIED = mtime
-            
+
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-            
+
             # Validate and load configuration
             STATIONS = config.get("stations", DEFAULT_CONFIG["stations"])
             LINES = config.get("lines", DEFAULT_CONFIG["lines"])
@@ -405,7 +843,6 @@ def load_config(force: bool = False):
             known = config.get("known_wifis", DEFAULT_CONFIG["known_wifis"])
             KNOWN_WIFIS = known if isinstance(known, dict) else {}
 
-            
             print(f"Configuration loaded from {CONFIG_FILE}")
         except json.JSONDecodeError as e:
             print(f"Error parsing {CONFIG_FILE}: {e}. Using defaults.")
@@ -415,7 +852,7 @@ def load_config(force: bool = False):
 def save_config():
     """Save current configuration to config.json file"""
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
-    
+
     with CONFIG_LOCK:
         load_web_settings()
         if not _is_module_enabled("config_json"):
@@ -1007,14 +1444,14 @@ def set_update_status(in_progress=False, version=None, success=None):
     except Exception as e:
         print(f"Warning: Could not write update status: {e}")
 
-def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
+def perform_update(repo_url, target_version=None, display=None, test_mode=False):
     """Perform system update by cloning repository and updating files
     
     Args:
         repo_url: GitHub repository URL
         target_version: Specific version to update to (tag name), or None for latest
-        epd: EPD display object to show update progress (optional)
-        test_mode: If True, don't try to use display
+        display: display backend to show update progress (optional)
+        test_mode: kept for backward compatibility (output backend decides rendering)
     
     Returns: True if update successful, False otherwise
     """
@@ -1025,7 +1462,7 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
     set_update_status(in_progress=True, version=target_version, success=None)
     
     # Show initial update screen
-    render_update_screen(epd, "Starting update...", target_version, test_mode)
+    render_update_screen(display, "Starting update...", target_version, test_mode)
     
     try:
         print("\n" + "="*50)
@@ -1037,19 +1474,19 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
         config_path = os.path.join(current_dir, CONFIG_FILE)
         
         # Check if git is available
-        render_update_screen(epd, "Checking git...", target_version, test_mode)
+        render_update_screen(display, "Checking git...", target_version, test_mode)
         try:
             subprocess.run(['git', '--version'], capture_output=True, check=True, timeout=5)
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             print("ERROR: git is not installed or not available")
             print("Please install git: sudo apt-get install git")
-            render_update_screen(epd, "Error: git not found", target_version, test_mode)
+            render_update_screen(display, "Error: git not found", target_version, test_mode)
             return False
         
         # Backup current config.json
         config_backup = None
         if os.path.exists(config_path):
-            render_update_screen(epd, "Backing up config...", target_version, test_mode)
+            render_update_screen(display, "Backing up config...", target_version, test_mode)
             print(f"Backing up {CONFIG_FILE}...")
             with open(config_path, 'r', encoding='utf-8') as f:
                 config_backup = f.read()
@@ -1057,7 +1494,7 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
         
         # Create temporary directory for cloning
         with tempfile.TemporaryDirectory() as temp_dir:
-            render_update_screen(epd, "Cloning repository...", target_version, test_mode)
+            render_update_screen(display, "Cloning repository...", target_version, test_mode)
             print(f"Cloning repository to temporary directory...")
             clone_path = os.path.join(temp_dir, "ovbuddy_update")
             
@@ -1074,7 +1511,7 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
                 print(f"ERROR: Failed to clone repository")
                 print(f"stdout: {result.stdout}")
                 print(f"stderr: {result.stderr}")
-                render_update_screen(epd, "Error: Clone failed", target_version, test_mode)
+                render_update_screen(display, "Error: Clone failed", target_version, test_mode)
                 return False
             
             print("✓ Repository cloned successfully")
@@ -1083,10 +1520,10 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
             dist_path = os.path.join(clone_path, "dist")
             if not os.path.exists(dist_path):
                 print(f"ERROR: dist/ directory not found in repository")
-                render_update_screen(epd, "Error: No dist/ found", target_version, test_mode)
+                render_update_screen(display, "Error: No dist/ found", target_version, test_mode)
                 return False
             
-            render_update_screen(epd, "Updating files...", target_version, test_mode)
+            render_update_screen(display, "Updating files...", target_version, test_mode)
             print("Updating files from repository...")
             
             # Copy files from dist/ to current directory
@@ -1118,14 +1555,14 @@ def perform_update(repo_url, target_version=None, epd=None, test_mode=False):
         
         # Restore config.json from backup
         if config_backup:
-            render_update_screen(epd, "Restoring config...", target_version, test_mode)
+            render_update_screen(display, "Restoring config...", target_version, test_mode)
             print(f"Restoring {CONFIG_FILE}...")
             with open(config_path, 'w', encoding='utf-8') as f:
                 f.write(config_backup)
             print("✓ Configuration restored")
         
         # Standardized reboot screen (same as manual reboot)
-        render_rebooting_screen(epd, test_mode=test_mode)
+        render_rebooting_screen(display, test_mode=test_mode)
         print("\n" + "="*50)
         print("UPDATE COMPLETED SUCCESSFULLY")
         print("="*50)
@@ -1411,8 +1848,9 @@ def _format_delay_suffix(entry, for_terminal: bool = False) -> str:
         return ""
     delay_minutes = delay_seconds // 60
     if for_terminal:
-        # Use ANSI bold escape codes for terminal output
-        return f" \033[1m>{delay_minutes}min\033[0m"
+        # IMPORTANT: keep this plain (no ANSI), otherwise textwrap-based rendering
+        # may wrap the suffix onto a new line because escape codes inflate string length.
+        return f" >{delay_minutes}min"
     return f">{delay_minutes}min"
 
 def safe_ascii(text):
@@ -1607,15 +2045,15 @@ def get_access_point_ui_info():
         "ip": _read_first_ipv4_for_interface('wlan0') or "192.168.4.1"
     }
 
-def render_qr_code(epd=None, test_mode=False):
+def render_qr_code(display=None, test_mode=False):
     """Render QR code with web server URL and instructions"""
     if not QRCODE_AVAILABLE:
         if test_mode:
             print("QR code not available (pyqrcode not installed)")
         return
     
-    if not test_mode and epd is None:
-        return  # Can't render without display
+    if display is None:
+        display = TerminalDisplayBackend()
     
     ap_active = is_access_point_mode_active()
     ap_info = get_access_point_ui_info() if ap_active else None
@@ -1624,18 +2062,26 @@ def render_qr_code(epd=None, test_mode=False):
     # (In AP mode, mDNS can be unreliable/unsupported on some clients.)
     url = f"http://{ap_info['ip']}:8080" if ap_active else "http://ovbuddy.local:8080"
     
-    if test_mode:
-        print(f"\nQR Code URL: {url}")
-        if ap_active:
-            print("[Access Point Mode]")
-            print(f"SSID: {ap_info['ssid']}")
-            if ap_info["password"]:
-                if ap_info["display_password"]:
-                    print(f"Password: {ap_info['password']}")
-                else:
-                    print("Password: ********")
-        print("Instructions: Scan QR code to access web interface")
-        print("(QR code would be displayed on the right, instructions on the left)")
+    if not getattr(display, "supports_pil", False):
+        lines = ["Web Config", "", f"URL: {safe_ascii(url)}"]
+        if ap_active and ap_info:
+            lines.append("")
+            lines.append("AP Mode")
+            lines.append(f"SSID: {safe_ascii(ap_info.get('ssid', ''))}")
+            pwd = ap_info.get("password") or ""
+            if pwd:
+                lines.append("PWD: " + (safe_ascii(pwd) if ap_info.get("display_password") else "********"))
+        else:
+            wifi_status = get_wifi_status()
+            ssid = safe_ascii(wifi_status.get("ssid") or "")
+            ip = safe_ascii(wifi_status.get("ip") or get_local_ip() or "")
+            if ssid:
+                lines.append("")
+                lines.append(f"WiFi: {ssid}")
+            if ip:
+                lines.append(f"IP: {ip}")
+        lines.extend(["", "Scan QR (device) or open URL", f"v{VERSION}"])
+        display.show_text("OVBuddy", time.strftime("%H:%M"), lines, inverted=INVERTED)
         return
 
     # Portrait orientations: render a simple text-only "how to reach web UI" screen.
@@ -1681,7 +2127,7 @@ def render_qr_code(epd=None, test_mode=False):
                     break
 
             image = _apply_display_orientation(image)
-            epd.display(epd.getbuffer(image))
+            display.show_pil(image)
             return
         except Exception as e:
             print(f"Error rendering QR screen (portrait): {e}")
@@ -1907,19 +2353,18 @@ def render_qr_code(epd=None, test_mode=False):
             traceback.print_exc()
         
         image = _apply_display_orientation(image)
-        
-        # Display
-        image_buffer = epd.getbuffer(image)
-        epd.display(image_buffer)
+        display.show_pil(image)
         print(f"QR code displayed: {url}")
         
     except Exception as e:
         print(f"Error rendering QR code: {e}")
 
-def render_loading_screen(epd=None, test_mode=False):
+def render_loading_screen(display=None, test_mode=False):
     """Render loading screen on the e-ink display during startup"""
-    if test_mode or epd is None:
-        print("\n[Loading] OVBuddy Starting...")
+    if display is None:
+        display = TerminalDisplayBackend()
+    if not getattr(display, "supports_pil", False):
+        display.show_text("OVBuddy", time.strftime("%H:%M"), ["Starting...", ""], inverted=INVERTED)
         return
     
     try:
@@ -1954,34 +2399,39 @@ def render_loading_screen(epd=None, test_mode=False):
         
         # Apply orientation mapping to panel coordinates
         image = _apply_display_orientation(image)
-        
-        # Display
-        image_buffer = epd.getbuffer(image)
-        epd.display(image_buffer)
+        display.show_pil(image)
         
     except Exception as e:
         print(f"Error rendering loading screen: {e}")
 
-def render_ap_info(ssid, password=None, display_password=False, epd=None, test_mode=False):
+def render_ap_info(ssid, password=None, display_password=False, display=None, test_mode=False):
     """Render Access Point information on the e-ink display
     
     Args:
         ssid: The AP SSID to display
         password: The AP password (optional)
         display_password: Whether to show the password on screen
-        epd: The e-ink display object
+        display: Display backend (hardware/terminal/sim)
         test_mode: If True, print to console instead of displaying
     """
-    if test_mode or epd is None:
-        print("\n[Access Point Mode]")
-        print(f"SSID: {ssid}")
+    if display is None:
+        display = TerminalDisplayBackend()
+    if not getattr(display, "supports_pil", False):
+        pwd = ""
         if display_password and password:
-            print(f"Password: {password}")
+            pwd = str(password)
         elif password:
-            print("Password: ********")
+            pwd = "********"
         else:
-            print("Password: (none - open network)")
-        print("IP: 192.168.4.1:8080")
+            pwd = "(open)"
+        lines = [
+            "Access Point Mode",
+            "",
+            f"SSID: {safe_ascii(str(ssid))}",
+            f"PWD: {safe_ascii(pwd)}",
+            "URL: http://192.168.4.1:8080",
+        ]
+        display.show_text("OVBuddy", time.strftime("%H:%M"), lines, inverted=INVERTED)
         return
 
     # Portrait orientations: keep it simple and readable (text-only).
@@ -2009,7 +2459,7 @@ def render_ap_info(ssid, password=None, display_password=False, epd=None, test_m
                 if y > h - 12:
                     break
             image = _apply_display_orientation(image)
-            epd.display(epd.getbuffer(image))
+            display.show_pil(image)
             return
         except Exception as e:
             print(f"Error rendering AP info (portrait): {e}")
@@ -2118,10 +2568,7 @@ def render_ap_info(ssid, password=None, display_password=False, epd=None, test_m
         draw.text((5, y), "to configure WiFi", font=font, fill=fg_color)
         
         image = _apply_display_orientation(image)
-        
-        # Display
-        image_buffer = epd.getbuffer(image)
-        epd.display(image_buffer)
+        display.show_pil(image)
         
         print(f"Displayed AP info: SSID={ssid}, Password={'shown' if display_password and password else 'hidden'}")
         
@@ -2130,13 +2577,13 @@ def render_ap_info(ssid, password=None, display_password=False, epd=None, test_m
         import traceback
         traceback.print_exc()
 
-def render_update_screen(epd=None, status="Updating...", version=None, test_mode=False):
+def render_update_screen(display=None, status="Updating...", version=None, test_mode=False):
     """Render update progress screen on the e-ink display"""
-    if test_mode or epd is None:
-        if version:
-            print(f"\n[{status}] Updating to v{version}...")
-        else:
-            print(f"\n[{status}]")
+    if display is None:
+        display = TerminalDisplayBackend()
+    if not getattr(display, "supports_pil", False):
+        msg = f"Updating to v{version}..." if version else ""
+        display.show_text("Update", time.strftime("%H:%M"), [status, "", msg], inverted=INVERTED)
         return
     
     try:
@@ -2190,22 +2637,21 @@ def render_update_screen(epd=None, status="Updating...", version=None, test_mode
         
         # Apply orientation mapping to panel coordinates
         image = _apply_display_orientation(image)
-        
-        # Display
-        image_buffer = epd.getbuffer(image)
-        epd.display(image_buffer)
+        display.show_pil(image)
         
     except Exception as e:
         print(f"Error rendering update screen: {e}")
 
-def render_rebooting_screen(epd=None, test_mode=False):
+def render_rebooting_screen(display=None, test_mode=False):
     """Render the standardized reboot screen (consistent across manual reboot + updates)."""
-    render_action_screen(epd, title="Rebooting...", message="Please wait", test_mode=test_mode)
+    render_action_screen(display, title="Rebooting...", message="Please wait", test_mode=test_mode)
 
-def render_action_screen(epd=None, title="Action", message="", test_mode=False):
+def render_action_screen(display=None, title="Action", message="", test_mode=False):
     """Render a short feedback screen for user actions (restart/join wifi/etc)."""
-    if test_mode or epd is None:
-        print(f"[ACTION] {title}: {message}")
+    if display is None:
+        display = TerminalDisplayBackend()
+    if not getattr(display, "supports_pil", False):
+        display.show_text(str(title), time.strftime("%H:%M"), [str(message)], inverted=INVERTED)
         return
     try:
         bg_color = 0 if INVERTED else 255
@@ -2241,8 +2687,7 @@ def render_action_screen(epd=None, title="Action", message="", test_mode=False):
             y += 14
 
         image = _apply_display_orientation(image)
-
-        epd.display(epd.getbuffer(image))
+        display.show_pil(image)
     except Exception as e:
         print(f"Error rendering action screen: {e}")
 
@@ -2302,14 +2747,11 @@ def format_configuration():
     
     return "\n".join(lines)
 
-def render_board(departures, epd=None, error_msg=None, is_first_successful=False, last_was_successful=False, test_mode=False):
+def render_board(departures, display=None, error_msg=None, is_first_successful=False, last_was_successful=False, test_mode=False):
     """Draw the departures on the eInk display (or print in test mode)"""
     
     # Header - show station name(s)
-    if test_mode:
-        # In test mode, always show "Zürich Saalsporthalle"
-        header_text = safe_ascii("Zürich Saalsporthalle")
-    elif isinstance(STATIONS, list) and len(STATIONS) > 1:
+    if isinstance(STATIONS, list) and len(STATIONS) > 1:
         # Check if stations differ only by comma/whitespace
         normalized_stations = [normalize_station_name(s) for s in STATIONS]
         # Check if all normalized stations are the same
@@ -2327,33 +2769,62 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
     if len(header_text) > 30:
         header_text = header_text[:27] + "..."
     
-    if TEST_MODE:
-        # Test mode: just print to console
-        print("\n" + "=" * 40)
-        print(header_text)
-        print("-" * 40)
-        
+    if display is None:
+        display = TerminalDisplayBackend()
+
+    # Text-only backends (terminal) render without PIL.
+    if not getattr(display, "supports_pil", False):
+        now_str = time.strftime("%H:%M")
+        cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        w = min(max(48, cols - 2), 90)
+        inner_w = w - 2
+        body = []
+
         if error_msg:
-            # Check if this is a configuration message (has newlines)
-            if "\n" in error_msg:
-                print("Configuration:")
-                print(error_msg)
+            e = safe_ascii(str(error_msg))
+            if "\n" in e:
+                body.append("Configuration:")
+                body.extend([ln.strip() for ln in e.split("\n") if ln.strip()])
             else:
-                print(f"Error: {error_msg}")
+                body.append("Error:")
+                body.append(e)
         elif departures:
             for entry in departures[:MAX_DEPARTURES]:
-                line_num = format_line_number(entry)
-                dest_raw = entry["to"]
-                dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
-                time_str = entry["stop"]["departure"][11:16]
+                line_num = format_line_number(entry).strip()
+                dest_raw = entry.get("to", "")
+                dest = safe_ascii(clean_destination_name(dest_raw))
+                time_str = str(entry.get("stop", {}).get("departure", ""))[11:16]
                 delay_str = _format_delay_suffix(entry, for_terminal=True)
-                print(f"{line_num} {dest} {time_str}{delay_str}")
+                right_with_delay = (time_str + delay_str).strip()
+                right_visible_len = len(right_with_delay)
+                left_prefix = f"{line_num} "
+                # Calculate available space for destination
+                max_dest = max(0, inner_w - len(left_prefix) - right_visible_len - 1)
+                if len(dest) > max_dest and max_dest >= 3:
+                    dest = dest[: max_dest - 3] + "..."
+                elif len(dest) > max_dest:
+                    dest = dest[:max_dest]
+                # Calculate padding: ensure total visible length equals inner_w
+                total_visible = len(left_prefix) + len(dest) + right_visible_len
+                pad = max(1, inner_w - total_visible)
+                # Build the complete line
+                line = left_prefix + dest + (" " * pad) + right_with_delay
+                # Verify the length matches inner_w (to prevent wrapping)
+                if len(line) > inner_w:
+                    # If still too long, truncate destination more aggressively
+                    excess = len(line) - inner_w
+                    if len(dest) > excess:
+                        dest = dest[:len(dest) - excess - 3] + "..."
+                        pad = max(1, inner_w - len(left_prefix) - len(dest) - right_visible_len)
+                        line = left_prefix + dest + (" " * pad) + right_with_delay
+                body.append(line)
         else:
-            print("No departures available")
-        print("=" * 40 + "\n")
+            body.append("No departures available")
+
+        display.show_text(header_text, now_str, body, inverted=INVERTED)
         return
     
-    # Real mode: render to display
+    # PIL-backed mode: render to display (hardware/sim)
     # Set background and foreground colors based on inverted flag
     bg_color = 0 if INVERTED else 255  # Black if inverted, white if normal
     fg_color = 255 if INVERTED else 0  # White if inverted, black if normal
@@ -2572,73 +3043,44 @@ def render_board(departures, epd=None, error_msg=None, is_first_successful=False
         y += 15
         draw.text((0, y), "available", font=font_line, fill=fg_color)
 
-    # Send to display
-    # Note: We don't call epd.sleep() here because it closes the SPI connection
-    # The display will stay awake between updates
-    try:
-        # Map viewer-oriented canvas to panel coordinates
-        image = _apply_display_orientation(image)
-        
-        # Get the image buffer
-        image_buffer = epd.getbuffer(image)
-        
-        # Debug: log what we're displaying
-        current_time = time.strftime("%H:%M:%S")
-        if departures:
-            first_dep = departures[0]
-            line_info = f"{format_line_number(first_dep)} -> {safe_ascii(first_dep['to'])}"
-            print(f"[{current_time}] Updating display: {len(departures)} departures, first: {line_info}")
-        else:
-            print(f"[{current_time}] Updating display: {error_msg if error_msg else 'No departures'}")
-        
-        # Determine refresh type based on state
-        # Always use full refresh for:
-        # - Error messages
-        # - First successful fetch
-        # - Switching from error to success
-        # - When partial refresh is disabled
-        # Only use partial refresh when:
-        # - Last fetch was successful AND current fetch is successful
-        # - Partial refresh is enabled
-        has_error = error_msg is not None
-        switching_from_error = has_error or not last_was_successful
-        
-        use_partial = (USE_PARTIAL_REFRESH and 
-                      not is_first_successful and 
-                      not has_error and 
-                      last_was_successful)
-        
-        if use_partial:
-            # Partial refresh: updates only changed pixels, less flashing but may have ghosting
-            print("Using partial refresh")
-            epd.displayPartial(image_buffer)
-        else:
-            # Full refresh: complete refresh cycle, more reliable but more flashing
-            reason = []
-            if is_first_successful:
-                reason.append("first successful fetch")
-            if has_error:
-                reason.append("error message")
-            if switching_from_error and not has_error:
-                reason.append("switching from error to success")
-            if not USE_PARTIAL_REFRESH:
-                reason.append("partial refresh disabled")
-            if reason:
-                print(f"Using full refresh: {', '.join(reason)}")
-            epd.display(image_buffer)
-        
-    except OSError as e:
-        # If SPI connection is closed, reinitialize the display
-        print(f"SPI error, reinitializing display: {e}")
-        if epd:
-            try:
-                epd.init()
-                image_buffer = epd.getbuffer(image)
-                # On reinit, always use full refresh
-                epd.display(image_buffer)
-            except Exception as e2:
-                print(f"Failed to reinitialize display: {e2}")
-                raise
+    # Map viewer-oriented canvas to panel coordinates
+    image = _apply_display_orientation(image)
+
+    # Debug: log what we're displaying
+    current_time = time.strftime("%H:%M:%S")
+    debug_line = ""
+    debug_status = ""
+    if departures:
+        first_dep = departures[0]
+        debug_line = f"{format_line_number(first_dep)} -> {safe_ascii(first_dep['to'])}"
+        debug_status = f"{len(departures)} departures"
+        print(f"[{current_time}] Updating display: {debug_status}, first: {debug_line}")
+    else:
+        debug_status = (safe_ascii(str(error_msg)) if error_msg else "No departures")
+        print(f"[{current_time}] Updating display: {debug_status}")
+
+    # Determine refresh type based on state (same logic as before)
+    has_error = error_msg is not None
+    use_partial = (USE_PARTIAL_REFRESH and
+                   (not is_first_successful) and
+                   (not has_error) and
+                   last_was_successful)
+    if use_partial:
+        print("Using partial refresh")
+    else:
+        reason = []
+        if is_first_successful:
+            reason.append("first successful fetch")
+        if has_error:
+            reason.append("error message")
+        if not last_was_successful and not has_error:
+            reason.append("switching from error to success")
+        if not USE_PARTIAL_REFRESH:
+            reason.append("partial refresh disabled")
+        if reason:
+            print(f"Using full refresh: {', '.join(reason)}")
+
+    display.show_pil(image, partial=use_partial, debug_line=debug_line, debug_status=debug_status)
 
 # --------------------------
 # WIFI MANAGEMENT
@@ -3737,7 +4179,7 @@ if FLASK_AVAILABLE:
             # This is intentionally done after stopping services so nothing else overwrites the screen.
             try:
                 if TEST_MODE:
-                    render_rebooting_screen(None, test_mode=True)
+                    render_rebooting_screen(TerminalDisplayBackend(), test_mode=True)
                 else:
                     try:
                         import epd2in13_V4
@@ -3748,7 +4190,7 @@ if FLASK_AVAILABLE:
                     if epd2in13_V4 is not None:
                         epd = epd2in13_V4.EPD()
                         epd.init()
-                        render_rebooting_screen(epd, test_mode=False)
+                        render_rebooting_screen(HardwareEinkBackend(epd), test_mode=False)
                         # Put display to sleep to reduce power/ghosting while rebooting
                         try:
                             epd.sleep()
@@ -3954,28 +4396,22 @@ def main(test_mode_arg=False, disable_web=False):
     # Load configuration from file
     load_config()
     
-    # Initialize display early (before update check) so we can show update screen
-    epd = None
-    if TEST_MODE:
-        print("Running in TEST MODE (no display hardware required)")
-        print("Set TEST_MODE=0 to run with display hardware\n")
-    else:
-        # Initialize display with retry logic to handle GPIO busy errors
+    # Initialize display backend early (before update check) so we can show update screen.
+    display = create_display_backend()
+
+    if isinstance(display, HardwareEinkBackend):
+        # Initialize Waveshare display with retry logic to handle GPIO busy errors
         print("Initializing display hardware...")
         max_retries = 5
         retry_delay = 2
-        
+
         for attempt in range(max_retries):
             try:
-                if epd is None:
-                    epd = epd2in13_V4.EPD()
-                epd.init()
-                # Clear screen: use black if inverted, white if normal
-                clear_color = 0x00 if INVERTED else 0xFF
-                epd.Clear(clear_color)
+                display.epd.init()
+                display.clear(inverted=INVERTED)
                 print("Display initialized and cleared")
                 # Show loading screen immediately
-                render_loading_screen(epd, test_mode=test_mode_arg)
+                render_loading_screen(display)
                 break
             except Exception as e:
                 error_msg = str(e)
@@ -3983,27 +4419,26 @@ def main(test_mode_arg=False, disable_web=False):
                     if attempt < max_retries - 1:
                         print(f"GPIO pins busy (attempt {attempt + 1}/{max_retries}), waiting {retry_delay}s before retry...")
                         time.sleep(retry_delay)
-                        # Try to clean up any existing GPIO state
                         try:
-                            if epd:
-                                epd.sleep()
-                        except:
+                            display.sleep()
+                        except Exception:
                             pass
-                        epd = None
                         continue
-                    else:
-                        print(f"ERROR: Failed to initialize display after {max_retries} attempts: {e}")
-                        print("GPIO pins appear to be in use by another process.")
-                        print("Try: sudo systemctl stop ovbuddy && sleep 2 && sudo systemctl start ovbuddy")
-                        # Continue without display - update can still proceed
-                        epd = None
-                        break
-                else:
-                    # Different error, don't retry
-                    print(f"ERROR: Failed to initialize display: {e}")
-                    # Continue without display - update can still proceed
-                    epd = None
+                    print(f"ERROR: Failed to initialize display after {max_retries} attempts: {e}")
+                    print("GPIO pins appear to be in use by another process.")
+                    print("Try: sudo systemctl stop ovbuddy && sleep 2 && sudo systemctl start ovbuddy")
+                    # Fall back to terminal output so the program keeps running.
+                    display = TerminalDisplayBackend()
                     break
+                print(f"ERROR: Failed to initialize display: {e}")
+                display = TerminalDisplayBackend()
+                break
+    else:
+        # Terminal/sim backends don't require initialization.
+        if TEST_MODE:
+            print("Running in TEST MODE (no display hardware required)")
+            print("Set TEST_MODE=0 and OVBUDDY_OUTPUT=hardware to run with display hardware\n")
+        render_loading_screen(display)
     
     # Check and clear update status on startup
     update_status = get_update_status()
@@ -4029,7 +4464,7 @@ def main(test_mode_arg=False, disable_web=False):
                 print(f"\n🎉 Update available: v{VERSION} -> v{latest_version}")
                 print("Auto-update enabled. Attempting to update...")
                 
-                if perform_update(UPDATE_REPOSITORY_URL, latest_version, epd=epd, test_mode=test_mode_arg):
+                if perform_update(UPDATE_REPOSITORY_URL, latest_version, display=display, test_mode=test_mode_arg):
                     print("\n✓ Update successful!")
                 print("Reinstalling services and restarting...")
                 
@@ -4061,7 +4496,7 @@ def main(test_mode_arg=False, disable_web=False):
                                 print("✓ Services reinstalled and restarted successfully")
                                 services_restarted = True
                                 # Show rebooting message (standardized)
-                                render_rebooting_screen(epd, test_mode=test_mode_arg)
+                                render_rebooting_screen(display, test_mode=test_mode_arg)
                                 time.sleep(2)  # Give user time to see the message
                                 # Reboot to apply changes cleanly
                                 try:
@@ -4120,7 +4555,7 @@ def main(test_mode_arg=False, disable_web=False):
                                 print("✓ ovbuddy-wifi service also restarted")
                             
                             # Show rebooting message (standardized)
-                            render_rebooting_screen(epd, test_mode=test_mode_arg)
+                            render_rebooting_screen(display, test_mode=test_mode_arg)
                             time.sleep(2)  # Give user time to see the message
                             # Reboot to apply changes cleanly
                             try:
@@ -4160,10 +4595,16 @@ def main(test_mode_arg=False, disable_web=False):
     
     if test_mode_arg:
         print("Running with MOCK DATA (--test argument)")
-        print("Using 'Zürich Saalsporthalle' as station with mock departures\n")
+        try:
+            station_hint = STATIONS[0] if isinstance(STATIONS, list) and STATIONS else STATIONS
+        except Exception:
+            station_hint = ""
+        if station_hint:
+            print(f"Using configured station (mock): {station_hint}\n")
+        else:
+            print("Using configured station(s) (mock)\n")
     
     # Display is already initialized earlier (before update check)
-    # epd variable is already set above
     first_successful_fetch = False  # Track if we've done first successful fetch
 
     update_count = 0
@@ -4177,7 +4618,7 @@ def main(test_mode_arg=False, disable_web=False):
             ui_event = _read_ui_event()
             if ui_event:
                 render_action_screen(
-                    epd,
+                    display,
                     title=ui_event.get("title", "Action"),
                     message=ui_event.get("message", ""),
                     test_mode=test_mode_arg
@@ -4198,7 +4639,7 @@ def main(test_mode_arg=False, disable_web=False):
                 print(f"Target version: {target_version}")
                 print("="*50)
                 
-                if perform_update(UPDATE_REPOSITORY_URL, target_version, epd=epd, test_mode=test_mode_arg):
+                if perform_update(UPDATE_REPOSITORY_URL, target_version, display=display, test_mode=test_mode_arg):
                     print("\n✓ Update successful!")
                     print("Reinstalling services and restarting...")
                     
@@ -4228,7 +4669,7 @@ def main(test_mode_arg=False, disable_web=False):
                                 if install_result.returncode == 0:
                                     print("✓ Services reinstalled and restarted successfully")
                                     services_restarted = True
-                                    render_rebooting_screen(epd, test_mode=test_mode_arg)
+                                    render_rebooting_screen(display, test_mode=test_mode_arg)
                                     time.sleep(2)
                                     try:
                                         if not test_mode_arg:
@@ -4265,7 +4706,7 @@ def main(test_mode_arg=False, disable_web=False):
                                 else:
                                     print("✓ ovbuddy service restarted (ovbuddy-web not active)")
                                 
-                                render_rebooting_screen(epd, test_mode=test_mode_arg)
+                                render_rebooting_screen(display, test_mode=test_mode_arg)
                                 time.sleep(2)
                                 try:
                                     if not test_mode_arg:
@@ -4317,13 +4758,16 @@ def main(test_mode_arg=False, disable_web=False):
 
                 if last_ap_screen_key != ap_screen_key:
                     try:
-                        render_qr_code(epd, test_mode=test_mode_arg)
+                        render_qr_code(display, test_mode=test_mode_arg)
                     except Exception as e:
                         print(f"Error displaying AP QR screen: {e}")
                     last_ap_screen_key = ap_screen_key
 
                 # Poll AP mode periodically; avoid e-ink flashing by not re-rendering.
-                time.sleep(5)
+                # Keep simulator window responsive while waiting.
+                for _ in range(5):
+                    display.pump()
+                    time.sleep(1)
                 continue
             else:
                 if last_ap_active is True:
@@ -4343,8 +4787,11 @@ def main(test_mode_arg=False, disable_web=False):
             if test_mode_arg:
                 mock_data = generate_mock_departures()
                 # Add station name to each departure (same as real API)
+                mock_station = STATIONS[0] if isinstance(STATIONS, list) and STATIONS else STATIONS
+                if not isinstance(mock_station, str):
+                    mock_station = str(mock_station)
                 for dep in mock_data:
-                    dep["_station"] = "Zürich Saalsporthalle"
+                    dep["_station"] = mock_station
                 # Process mock data the same way as real API data
                 # Filter by lines
                 filtered = [entry for entry in mock_data if matches_line(entry["number"], LINES)]
@@ -4373,7 +4820,7 @@ def main(test_mode_arg=False, disable_web=False):
                 if QR_CODE_DISPLAY_DURATION > 0:
                     try:
                         print("Showing QR code...")
-                        render_qr_code(epd, test_mode=test_mode_arg)
+                        render_qr_code(display, test_mode=test_mode_arg)
                         print(f"Showing QR code for {QR_CODE_DISPLAY_DURATION} seconds...")
                         time.sleep(QR_CODE_DISPLAY_DURATION)
                         print("QR code display complete")
@@ -4389,7 +4836,7 @@ def main(test_mode_arg=False, disable_web=False):
                 # Continue to next iteration to fetch immediately
                 continue
             
-            render_board(departures, epd, error_msg, 
+            render_board(departures, display, error_msg, 
                         is_first_successful=is_first_successful,
                         last_was_successful=last_was_successful,
                         test_mode=test_mode_arg)
@@ -4406,10 +4853,11 @@ def main(test_mode_arg=False, disable_web=False):
             # Update last_was_successful for next iteration
             last_was_successful = is_successful
             
-            # Sleep, but check for trigger more frequently
+            # Sleep, but check for trigger more frequently (and keep simulator window responsive)
             sleep_interval = 1  # Check every second
             slept = 0
             while slept < REFRESH_INTERVAL and not refresh_triggered:
+                display.pump()
                 time.sleep(sleep_interval)
                 slept += sleep_interval
                 # Check for trigger file during sleep
@@ -4429,12 +4877,11 @@ def main(test_mode_arg=False, disable_web=False):
             stop_web_server()
         
         # Only sleep/close display when we're done
-        if epd and not TEST_MODE:
-            try:
-                print("Putting display to sleep...")
-                epd.sleep()
-            except Exception as e:
-                print(f"Error putting display to sleep: {e}")
+        try:
+            print("Putting display to sleep...")
+            display.sleep()
+        except Exception as e:
+            print(f"Error putting display to sleep: {e}")
 
 if __name__ == "__main__":
     # Parse command line arguments

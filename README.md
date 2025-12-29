@@ -77,6 +77,8 @@ Primary settings live in `/home/<PI_USER>/ovbuddy/config.json` (stations, refres
 - [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)
 - [`doc/WEB_INTERFACE.md`](doc/WEB_INTERFACE.md)
 - [`doc/CONFIGURATION.md`](doc/CONFIGURATION.md)
+- [`doc/TERMINAL_PREVIEW.md`](doc/TERMINAL_PREVIEW.md)
+- [`doc/SIMULATOR.md`](doc/SIMULATOR.md)
 - [`doc/TROUBLESHOOTING.md`](doc/TROUBLESHOOTING.md)
 - [`doc/ZEROCONF_INSTALLATION.md`](doc/ZEROCONF_INSTALLATION.md)
 
