@@ -43,7 +43,7 @@ try:
 except ImportError:
     QRCODE_AVAILABLE = False
     print("Warning: pyqrcode not available. QR code will not be displayed.")
-    print("  To install: pip3 install pyqrcode pypng")
+    print("  To install: pip3 install pyqrcode  (pypng optional)")
 
 # Check if requirements.txt exists and suggest installation
 if not FLASK_AVAILABLE or not ZEROCONF_AVAILABLE:
@@ -267,100 +267,25 @@ class TerminalDisplayBackend(DisplayBackend):
 
 
 class SimDisplayBackend(DisplayBackend):
-    """PIL-backed simulator: writes each frame to a PNG."""
+    """PIL-backed simulator: writes each frame to a PNG.
+
+    The *viewer* is a separate process (`dist/eink_simulator.py`) that watches
+    the PNG and displays it. This keeps the simulator UI decoupled from OVBuddy.
+
+    Simulator resolution can be overridden via:
+    - OVBUDDY_SIM_WIDTH
+    - OVBUDDY_SIM_HEIGHT
+    """
     name = "sim"
     supports_pil = True
 
     def __init__(self, out_path):
         self.out_path = out_path
         self._notified = False
-        self._window_enabled = (os.getenv("OVBUDDY_SIM_WINDOW", "0") == "1")
-        self._scale = 3
-        try:
-            self._scale = max(1, int(os.getenv("OVBUDDY_SIM_SCALE", "3")))
-        except Exception:
-            self._scale = 3
-        self._tk_root = None
-        self._tk_label = None
-        self._tk_img = None
 
     def clear(self, inverted=False):
         # No-op for now.
         return None
-
-    def _ensure_window(self):
-        if not self._window_enabled:
-            return
-        if self._tk_root is not None:
-            return
-        # Try importing tkinter first (may fail on some systems)
-        try:
-            import tkinter as tk  # type: ignore
-        except Exception as e:
-            print(f"[sim] window disabled (tkinter not available): {e}")
-            self._window_enabled = False
-            return
-
-        # Try importing PIL ImageTk (this can fail on some macOS/PIL combinations)
-        try:
-            from PIL import ImageTk  # type: ignore
-        except Exception as e:
-            print(f"[sim] window disabled (PIL ImageTk not available): {e}")
-            print("[sim] continuing with PNG output only")
-            self._window_enabled = False
-            return
-
-        # Try creating the Tk root (can fail on some macOS versions)
-        # On macOS, Tkinter can sometimes abort with system-level errors
-        # We'll try to catch this, but if it still aborts, the user can disable the window
-        try:
-            # Set up error handling before creating Tk root
-            import sys
-            old_excepthook = sys.excepthook
-            def safe_excepthook(exc_type, exc_value, exc_traceback):
-                if exc_type is not SystemExit:
-                    print(f"[sim] window creation failed: {exc_type.__name__}: {exc_value}")
-                    print("[sim] continuing with PNG output only (window disabled)")
-                return old_excepthook(exc_type, exc_value, exc_traceback)
-            sys.excepthook = safe_excepthook
-
-            try:
-                root = tk.Tk()
-                root.title("OVBuddy – eInk Simulator")
-                root.resizable(False, False)
-                # Try to set window icon/attributes (may fail on some macOS versions)
-                try:
-                    root.withdraw()  # Hide initially to avoid flicker
-                except Exception:
-                    pass
-                label = tk.Label(root)
-                label.pack()
-                self._tk_root = root
-                self._tk_label = label
-                self._ImageTk = ImageTk  # stash module for later
-                try:
-                    root.deiconify()  # Show after setup
-                except Exception:
-                    pass
-                # Restore original excepthook on success
-                sys.excepthook = old_excepthook
-            except (Exception, SystemError, RuntimeError, SystemExit) as e:
-                # Catch all exceptions including system-level errors
-                sys.excepthook = old_excepthook
-                print(f"[sim] window creation failed: {e}")
-                print("[sim] continuing with PNG output only (window disabled)")
-                print("[sim] Tip: Set OVBUDDY_SIM_WINDOW=0 to disable window from the start")
-                self._window_enabled = False
-                self._tk_root = None
-                self._tk_label = None
-        except Exception as e:
-            # Fallback: if even the excepthook setup fails, just disable window
-            print(f"[sim] window setup failed: {e}")
-            print("[sim] continuing with PNG output only (window disabled)")
-            print("[sim] Tip: Set OVBUDDY_SIM_WINDOW=0 to disable window from the start")
-            self._window_enabled = False
-            self._tk_root = None
-            self._tk_label = None
 
     def show_pil(self, image, **_kwargs):
         if not PIL_AVAILABLE:
@@ -373,38 +298,8 @@ class SimDisplayBackend(DisplayBackend):
             img.save(self.out_path)
             if not self._notified:
                 print(f"[sim] writing frames to: {self.out_path}")
+                print("[sim] viewer: python3 dist/eink_simulator.py")
                 self._notified = True
-
-            # Optional: show in a live window
-            self._ensure_window()
-            if self._window_enabled and self._tk_root is not None and self._tk_label is not None:
-                try:
-                    show = img
-                    # Enlarge for comfortable viewing; keep pixels crisp.
-                    if self._scale != 1:
-                        try:
-                            show = show.resize((show.size[0] * self._scale, show.size[1] * self._scale), resample=Image.NEAREST)
-                        except Exception:
-                            show = show.resize((show.size[0] * self._scale, show.size[1] * self._scale))
-                    try:
-                        photo = self._ImageTk.PhotoImage(show)
-                        self._tk_img = photo  # keep ref alive
-                        self._tk_label.configure(image=photo)
-                        self._tk_root.update_idletasks()
-                        self._tk_root.update()
-                    except Exception as e:
-                        # ImageTk.PhotoImage can fail on some macOS/PIL combinations
-                        print(f"[sim] window update failed: {e}")
-                        print("[sim] continuing with PNG output only")
-                        self._window_enabled = False
-                        self._tk_root = None
-                        self._tk_label = None
-                except Exception as e:
-                    print(f"[sim] window rendering failed: {e}")
-                    print("[sim] continuing with PNG output only")
-                    self._window_enabled = False
-                    self._tk_root = None
-                    self._tk_label = None
         except Exception as e:
             print(f"[sim] failed to write frame: {e}")
         return None
@@ -415,13 +310,7 @@ class SimDisplayBackend(DisplayBackend):
         return None
 
     def pump(self):
-        if self._window_enabled and self._tk_root is not None:
-            try:
-                self._tk_root.update_idletasks()
-                self._tk_root.update()
-            except Exception:
-                # If the user closes the window, just stop pumping.
-                self._window_enabled = False
+        # Viewer runs in a separate process; nothing to pump here.
         return None
 
 
@@ -672,6 +561,27 @@ KNOWN_WIFIS = DEFAULT_CONFIG["known_wifis"]
 # Display constants (not configurable via web)
 DISPLAY_WIDTH = 250
 DISPLAY_HEIGHT = 122
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        raw = os.getenv(name, "")
+        if raw is None:
+            return default
+        raw = str(raw).strip()
+        if not raw:
+            return default
+        return int(raw)
+    except Exception:
+        return default
+
+# Simulator-only override: allow changing the logical display resolution for the PNG renderer.
+# This is intentionally NOT exposed via the web UI and has no effect on hardware mode.
+if OUTPUT_MODE == "sim":
+    _sim_w = _env_int("OVBUDDY_SIM_WIDTH", DISPLAY_WIDTH)
+    _sim_h = _env_int("OVBUDDY_SIM_HEIGHT", DISPLAY_HEIGHT)
+    if _sim_w > 0 and _sim_h > 0:
+        DISPLAY_WIDTH = _sim_w
+        DISPLAY_HEIGHT = _sim_h
 
 # UI event file: used to show short feedback messages on the e-ink display
 # triggered by web actions (safe IPC between ovbuddy-web and ovbuddy display service).
@@ -1785,20 +1695,23 @@ def format_line_number(entry):
         numeric_part = line_upper.strip()
         # Category determines the type
     
-    # Ensure numeric part is 2 digits (pad with space if single digit)
-    if len(numeric_part) == 1:
-        numeric_part = numeric_part + " "
-    elif len(numeric_part) == 0:
-        numeric_part = "  "
-    
+    # Keep up to 3 characters of the numeric part so we support 3-digit bus lines (e.g., 768).
+    # For short lines, pad with spaces so alignment stays consistent.
+    numeric_part = (numeric_part or "").strip()
+    if not numeric_part:
+        numeric_part = ""
+    if len(numeric_part) > 3:
+        numeric_part = numeric_part[:3]
+    numeric_part = numeric_part.ljust(3)
+
     # Format based on type:
-    # - Trains (S-Bahn): "S" + number
-    # - Trams and Buses: just the number (no prefix)
+    # - Trains (S-Bahn): "S" + up to 2 digits (S6, S18)
+    # - Trams and buses: up to 3 digits (5, 13, 768)
     if is_train:
+        # Keep room for the 'S' prefix: 1 + 2 digits = 3 chars total.
         result = ("S" + numeric_part[:2]).ljust(3)
     else:
-        # Trams and buses: just show the number
-        result = numeric_part[:2].ljust(3)
+        result = numeric_part[:3].ljust(3)
     
     return result
 
@@ -2136,15 +2049,30 @@ def render_qr_code(display=None, test_mode=False):
     try:
         # Generate QR code - use smaller version to fit on right side
         qr = pyqrcode.create(url, error='L', version=2)
-        
-        # Get QR code as PNG bytes with appropriate scale
-        qr_bytes = io.BytesIO()
-        # Scale 3 should give us about 105x105 pixels for version 2 QR code
-        qr.png(qr_bytes, scale=3, module_color=[0, 0, 0, 255], background=[255, 255, 255, 255])
-        qr_bytes.seek(0)
-        
-        # Load QR code image
-        qr_image = Image.open(qr_bytes).convert('1')
+
+        # Render QR code directly into a PIL image (avoids optional `pypng` dependency).
+        # `pyqrcode` exposes the module matrix as `qr.code` (list of rows).
+        qr_scale = 3
+        border = 2  # modules of quiet zone (small; we later add pixel margins anyway)
+        qr_matrix = getattr(qr, "code", None)
+        if not isinstance(qr_matrix, list) or not qr_matrix:
+            raise RuntimeError("pyqrcode did not provide a QR matrix")
+
+        qr_modules = len(qr_matrix)
+        side = (qr_modules + border * 2) * qr_scale
+        qr_image = Image.new("1", (side, side), 1)  # 1=white in mode '1'
+        qr_draw = ImageDraw.Draw(qr_image)
+        for y, row in enumerate(qr_matrix):
+            if not isinstance(row, (list, tuple)):
+                continue
+            for x, cell in enumerate(row):
+                if cell:
+                    x0 = (x + border) * qr_scale
+                    y0 = (y + border) * qr_scale
+                    qr_draw.rectangle(
+                        (x0, y0, x0 + qr_scale - 1, y0 + qr_scale - 1),
+                        fill=0,  # black
+                    )
         
         # Get display dimensions
         bg_color = 0 if INVERTED else 255
@@ -2797,7 +2725,8 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                 delay_str = _format_delay_suffix(entry, for_terminal=True)
                 right_with_delay = (time_str + delay_str).strip()
                 right_visible_len = len(right_with_delay)
-                left_prefix = f"{line_num} "
+                # Add a little extra gap after the line number; helps readability for 3-digit bus lines (e.g. 768).
+                left_prefix = f"{line_num}  "
                 # Calculate available space for destination
                 max_dest = max(0, inner_w - len(left_prefix) - right_visible_len - 1)
                 if len(dest) > max_dest and max_dest >= 3:
@@ -2847,23 +2776,62 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         num_departures_to_show = MAX_DEPARTURES  # Fallback to MAX_DEPARTURES for font sizing
     line_height = (available_height - line_spacing * (num_departures_to_show - 1)) // num_departures_to_show
     
-    # Try to load a larger font if available, otherwise use default
-    # Default font is ~8px tall, we'll try to scale up if we have space
+    # Fonts
+    # On the Pi, we typically have DejaVu under /usr/share/fonts. On macOS, those paths
+    # don't exist, so without overrides we fall back to Pillow's small bitmap font.
+    #
+    # You can force a specific font (useful for making the simulator match the Pi):
+    # - OVBUDDY_FONT_REGULAR=/path/to/font.ttf
+    # - OVBUDDY_FONT_BOLD=/path/to/font.ttf
+    #
+    # Default font is ~8px tall; we'll try to use a larger TrueType font if available.
     font_header = ImageFont.load_default()
-    
+
+    def _font_candidates(env_name: str, builtins: list) -> list:
+        cand = []
+        try:
+            env_path = (os.getenv(env_name) or "").strip()
+            if env_path:
+                cand.append(env_path)
+        except Exception:
+            pass
+        # Allow shipping fonts alongside the script in the future.
+        try:
+            local_fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+            if os.path.isdir(local_fonts_dir):
+                for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSansMono.ttf"):
+                    cand.append(os.path.join(local_fonts_dir, name))
+        except Exception:
+            pass
+        cand.extend(builtins)
+        # De-dupe while preserving order
+        out = []
+        seen = set()
+        for p in cand:
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+        return out
+
     # For line font, try to use a larger size if we have space
     try:
-        # Try common system fonts
-        font_paths = [
+        # Common system fonts across Linux/Pi and macOS.
+        font_paths = _font_candidates("OVBUDDY_FONT_REGULAR", [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
             "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        ]
-        font_bold_paths = [
+            "/System/Library/Fonts/SFNS.ttf",
+            "/System/Library/Fonts/Monaco.ttf",
+            "/Library/Fonts/Arial.ttf",
+        ])
+        font_bold_paths = _font_candidates("OVBUDDY_FONT_BOLD", [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
             "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-        ]
+            "/System/Library/Fonts/SFNS.ttf",
+            "/Library/Fonts/Arial Bold.ttf",
+        ])
         cap = 20 if _is_portrait_orientation() else 16
         font_size = min(line_height - 2, cap)  # Cap font, leave 2px margin
         font_line = None
@@ -2890,6 +2858,22 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
             font_line_bold = font_line
             if test_mode:
                 print("Bold font not available, using regular font for delays")
+
+        # Header font: use the same family if we found TrueType for the lines.
+        try:
+            header_size = max(9, min(11, font_size))
+            header_font = None
+            if font_line is not None and hasattr(font_line, "path") and getattr(font_line, "path", None):
+                header_font = ImageFont.truetype(getattr(font_line, "path"), header_size)
+            else:
+                for fp in font_paths:
+                    if os.path.exists(fp):
+                        header_font = ImageFont.truetype(fp, header_size)
+                        break
+            if header_font is not None:
+                font_header = header_font
+        except Exception:
+            pass
     except Exception:
         # If font loading fails, use default
         font_line = ImageFont.load_default()
@@ -2988,7 +2972,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
             # Estimate character width (monospaced font ~6-7px per char)
             char_width = 7  # Conservative estimate
             line_num_x = 0
-            dest_x = 4 * char_width  # After 3-character line number + 1 char space
+            dest_x = 5 * char_width  # After 3-character line number + 2 char spaces
             # Right edge for time/delay (will be calculated per line based on actual delay)
             time_x = w - 5  # 5px margin from right edge
             

@@ -1,5 +1,5 @@
 {
-  "stations": ["Zürich Seebach"],
+  "stations": ["Zürich, Seebach"],
   "lines": ["S6", "T14", "T51", "B768"],
   "refresh_interval": 20,
   "config_display_duration": 6,
