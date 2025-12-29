@@ -3,3 +3,4 @@ setup.env
 *.crt
 *.key
 retrieved-packages
+sim-output.png
