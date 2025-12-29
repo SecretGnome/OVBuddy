@@ -598,6 +598,93 @@ function connectToNetwork() {
     });
 }
 
+function connectManually() {
+    console.log('Manual WiFi connection initiated...');
+    
+    const ssidInput = document.getElementById('manualSsid');
+    const passwordInput = document.getElementById('manualPassword');
+    const connectButton = document.getElementById('manualConnectButton');
+    
+    const ssid = ssidInput.value.trim();
+    const password = passwordInput.value;
+    
+    if (!ssid) {
+        showMessage('Please enter a WiFi network name (SSID)', 'error');
+        ssidInput.focus();
+        return;
+    }
+    
+    // Disable button and show loading state
+    connectButton.disabled = true;
+    connectButton.textContent = 'Connecting...';
+    
+    console.log('Attempting to connect to:', ssid);
+    showMessage('Connecting to ' + ssid + '... This may take up to 15 seconds.', 'info');
+    
+    fetch('/api/wifi/connect', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            ssid: ssid,
+            password: password || ''
+        })
+    })
+    .then(response => {
+        console.log('Response status:', response.status);
+        return response.json();
+    })
+    .then(data => {
+        console.log('Response data:', data);
+        connectButton.disabled = false;
+        connectButton.textContent = 'Connect to Network';
+        
+        if (data.success) {
+            showMessage(data.message || 'Successfully connected to ' + ssid, 'success');
+            // Clear the form
+            ssidInput.value = '';
+            passwordInput.value = '';
+            // Refresh status after a longer delay to allow for AP mode exit and connection
+            setTimeout(() => {
+                refreshWifiStatus();
+            }, 8000);
+        } else {
+            showMessage('Error: ' + (data.error || 'Failed to connect to ' + ssid), 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Error connecting:', error);
+        connectButton.disabled = false;
+        connectButton.textContent = 'Connect to Network';
+        showMessage('Error connecting to network', 'error');
+    });
+}
+
+// Add Enter key support for manual WiFi connection
+document.addEventListener('DOMContentLoaded', function() {
+    const manualSsid = document.getElementById('manualSsid');
+    const manualPassword = document.getElementById('manualPassword');
+    
+    if (manualSsid) {
+        manualSsid.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                manualPassword.focus();
+            }
+        });
+    }
+    
+    if (manualPassword) {
+        manualPassword.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                connectManually();
+            }
+        });
+    }
+});
+
 function forceApMode() {
     console.log('Forcing AP mode...');
     
@@ -1213,4 +1300,3 @@ function maybeInitEnabledModules() {
         }
     }
 }
-

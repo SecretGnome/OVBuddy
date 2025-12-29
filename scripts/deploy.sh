@@ -108,11 +108,70 @@ fi
 
 # Check if sshpass is installed (needed for password auth)
 if ! command -v sshpass &> /dev/null; then
-    echo -e "${RED}Error: sshpass is required for password authentication${NC}"
-    echo "Install it with:"
-    echo "  macOS: brew install hudochenkov/sshpass/sshpass"
-    echo "  Linux: apt-get install sshpass"
-    exit 1
+    echo -e "${YELLOW}sshpass is required for password authentication${NC}"
+    echo -e "${YELLOW}Attempting to install sshpass automatically...${NC}"
+    
+    # Detect OS and install accordingly
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        if command -v brew &> /dev/null; then
+            echo "  Installing sshpass via Homebrew..."
+            if brew install hudochenkov/sshpass/sshpass 2>&1; then
+                echo -e "${GREEN}  ✓ sshpass installed successfully${NC}"
+            else
+                echo -e "${RED}  ✗ Failed to install sshpass via Homebrew${NC}"
+                echo -e "${RED}Error: Please install sshpass manually:${NC}"
+                echo "  brew install hudochenkov/sshpass/sshpass"
+                exit 1
+            fi
+        else
+            echo -e "${RED}Error: Homebrew not found. Please install sshpass manually:${NC}"
+            echo "  brew install hudochenkov/sshpass/sshpass"
+            exit 1
+        fi
+    else
+        # Linux - try different package managers
+        if command -v apt-get &> /dev/null; then
+            echo "  Installing sshpass via apt-get..."
+            if sudo apt-get update -qq && sudo apt-get install -y sshpass 2>&1; then
+                echo -e "${GREEN}  ✓ sshpass installed successfully${NC}"
+            else
+                echo -e "${RED}  ✗ Failed to install sshpass via apt-get${NC}"
+                echo -e "${RED}Error: Please install sshpass manually:${NC}"
+                echo "  sudo apt-get install sshpass"
+                exit 1
+            fi
+        elif command -v yum &> /dev/null; then
+            echo "  Installing sshpass via yum..."
+            if sudo yum install -y sshpass 2>&1; then
+                echo -e "${GREEN}  ✓ sshpass installed successfully${NC}"
+            else
+                echo -e "${RED}  ✗ Failed to install sshpass via yum${NC}"
+                echo -e "${RED}Error: Please install sshpass manually:${NC}"
+                echo "  sudo yum install sshpass"
+                exit 1
+            fi
+        elif command -v dnf &> /dev/null; then
+            echo "  Installing sshpass via dnf..."
+            if sudo dnf install -y sshpass 2>&1; then
+                echo -e "${GREEN}  ✓ sshpass installed successfully${NC}"
+            else
+                echo -e "${RED}  ✗ Failed to install sshpass via dnf${NC}"
+                echo -e "${RED}Error: Please install sshpass manually:${NC}"
+                echo "  sudo dnf install sshpass"
+                exit 1
+            fi
+        else
+            echo -e "${RED}Error: Could not detect package manager. Please install sshpass manually.${NC}"
+            exit 1
+        fi
+    fi
+    
+    # Verify installation
+    if ! command -v sshpass &> /dev/null; then
+        echo -e "${RED}Error: sshpass installation completed but command not found${NC}"
+        exit 1
+    fi
 fi
 
 # Check if dist folder exists (in current dir or parent dir)

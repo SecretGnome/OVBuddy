@@ -2716,6 +2716,18 @@ def get_wifi_status():
 
 def scan_wifi_networks():
     """Scan for available WiFi networks"""
+    
+    # Check if we're in Access Point mode
+    # When in AP mode, the WiFi interface is bound to hostapd and cannot scan
+    if is_access_point_mode_active():
+        return {
+            "error": "Cannot scan for WiFi networks while in Access Point mode. "
+                    "The WiFi interface is currently hosting the access point. "
+                    "To scan for networks, you need to either: "
+                    "1) Connect to a known WiFi network (if available), or "
+                    "2) Use a second WiFi adapter (USB WiFi dongle) for scanning."
+        }
+    
     networks = []
     
     # Try using iwlist (most reliable on Raspberry Pi)
@@ -2903,9 +2915,70 @@ def control_service(service_name, action):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def exit_ap_mode_if_active():
+    """Exit Access Point mode if currently active.
+    
+    Returns True if AP mode was active and successfully exited, False otherwise.
+    """
+    if not is_access_point_mode_active():
+        return False
+    
+    print("Device is in AP mode, exiting AP mode before connecting to WiFi...")
+    
+    try:
+        import time
+        
+        # Stop AP services (hostapd and dnsmasq)
+        print("Stopping hostapd and dnsmasq...")
+        subprocess.run(['sudo', 'killall', 'hostapd'], capture_output=True, timeout=5)
+        subprocess.run(['sudo', 'killall', 'dnsmasq'], capture_output=True, timeout=5)
+        time.sleep(2)
+        
+        # Flush IP configuration on wlan0
+        print("Flushing wlan0 IP configuration...")
+        subprocess.run(['sudo', 'ip', 'addr', 'flush', 'dev', 'wlan0'], capture_output=True, timeout=5)
+        subprocess.run(['sudo', 'ip', 'link', 'set', 'wlan0', 'down'], capture_output=True, timeout=5)
+        time.sleep(1)
+        
+        # Check if NetworkManager is available
+        nmcli_check = subprocess.run(['which', 'nmcli'], capture_output=True, timeout=2)
+        
+        if nmcli_check.returncode == 0:
+            # Re-enable NetworkManager management of wlan0
+            print("Re-enabling NetworkManager management...")
+            subprocess.run(['sudo', 'nmcli', 'device', 'set', 'wlan0', 'managed', 'yes'], 
+                         capture_output=True, timeout=10)
+            subprocess.run(['sudo', 'nmcli', 'radio', 'wifi', 'off'], 
+                         capture_output=True, timeout=5)
+            time.sleep(2)
+            subprocess.run(['sudo', 'nmcli', 'radio', 'wifi', 'on'], 
+                         capture_output=True, timeout=5)
+            time.sleep(3)
+        else:
+            # Restart wpa_supplicant and dhcpcd for wpa_supplicant-based systems
+            print("Restarting wpa_supplicant and dhcpcd...")
+            subprocess.run(['sudo', 'systemctl', 'start', 'dhcpcd'], 
+                         capture_output=True, timeout=10)
+            subprocess.run(['sudo', 'systemctl', 'start', 'wpa_supplicant'], 
+                         capture_output=True, timeout=10)
+            subprocess.run(['sudo', 'ip', 'link', 'set', 'wlan0', 'up'], 
+                         capture_output=True, timeout=5)
+            time.sleep(2)
+        
+        print("Successfully exited AP mode")
+        return True
+        
+    except Exception as e:
+        print(f"Warning: Error while exiting AP mode: {e}")
+        return False
+
 def connect_to_wifi(ssid, password=None):
     """Connect to a WiFi network using wpa_supplicant or nmcli"""
     try:
+        # First, exit AP mode if active (WiFi interface cannot connect while hosting AP)
+        if exit_ap_mode_if_active():
+            print("Exited AP mode, proceeding with WiFi connection...")
+        
         # Persist known WiFi immediately (so it survives reboot even if the
         # connection is still in progress / DHCP hasn't completed yet).
         try:
@@ -3284,9 +3357,47 @@ if FLASK_AVAILABLE:
             if not ssid:
                 return jsonify({"success": False, "error": "SSID is required"}), 400
 
-            write_ui_event("WiFi", f"Joining: {ssid}", duration_seconds=6)
+            # Check if we're in AP mode before connecting
+            was_in_ap_mode = is_access_point_mode_active()
+            
+            if was_in_ap_mode:
+                write_ui_event("WiFi", f"Exiting AP mode...", duration_seconds=3)
+            
+            write_ui_event("WiFi", f"Joining: {ssid}", duration_seconds=8)
             
             result = connect_to_wifi(ssid, password if password else None)
+            
+            # If connection was successful, restart the ovbuddy service
+            # This ensures the display service reconnects properly and exits AP mode if active
+            if result.get("success"):
+                try:
+                    import threading
+                    import time
+                    
+                    def restart_ovbuddy_delayed():
+                        """Restart ovbuddy service after a short delay to allow response to be sent"""
+                        time.sleep(5)  # Increased delay to allow AP exit and WiFi connection to stabilize
+                        try:
+                            subprocess.run(['systemctl', 'restart', 'ovbuddy'], 
+                                         capture_output=True, timeout=10)
+                            print("ovbuddy service restarted after WiFi connection")
+                        except Exception as e:
+                            print(f"Warning: Could not restart ovbuddy service: {e}")
+                    
+                    # Start restart in background thread so we can return response first
+                    restart_thread = threading.Thread(target=restart_ovbuddy_delayed, daemon=True)
+                    restart_thread.start()
+                    
+                    # Update the success message to inform user
+                    if was_in_ap_mode:
+                        result["message"] = (f"Exited AP mode and connected to {ssid}. "
+                                           f"Display service will restart shortly. "
+                                           f"You may need to reconnect to {ssid} to access the web interface.")
+                    else:
+                        result["message"] = result.get("message", f"Connected to {ssid}") + " - Display service will restart shortly."
+                except Exception as e:
+                    print(f"Warning: Could not schedule ovbuddy restart: {e}")
+            
             return jsonify(result)
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -4336,4 +4447,3 @@ if __name__ == "__main__":
     
     # Pass arguments to main function
     main(test_mode_arg=args.test, disable_web=args.no_web)
-

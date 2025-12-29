@@ -270,6 +270,19 @@
                         <button type="button" id="clearKnownNetworksButton" onclick="clearKnownNetworks()" class="danger">Clear Known Networks</button>
                     </div>
                     
+                    <!-- Manual WiFi Connection Form -->
+                    <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 15px; margin-top: 15px;">
+                        <label>Manual WiFi Connection</label>
+                        <div style="margin-bottom: 10px; color: var(--text-secondary); font-size: 0.9em;">
+                            Enter WiFi credentials manually (useful when scanning is unavailable in AP mode)
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <input type="text" id="manualSsid" placeholder="WiFi Network Name (SSID)" autocomplete="off" style="width: 100%; padding: 8px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); font-family: 'Courier New', monospace;">
+                            <input type="password" id="manualPassword" placeholder="WiFi Password (leave empty for open networks)" autocomplete="new-password" style="width: 100%; padding: 8px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); font-family: 'Courier New', monospace;">
+                            <button type="button" id="manualConnectButton" onclick="connectManually()" class="primary" style="align-self: flex-start;">Connect to Network</button>
+                        </div>
+                    </div>
+                    
                     <div id="networkListContainer" style="display: none;">
                         <div class="form-group">
                             <label>Available Networks</label>
@@ -328,4 +341,3 @@
     <script src="/static/js/app.js"></script>
 </body>
 </html>
-
