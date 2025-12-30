@@ -61,3 +61,4 @@ To configure WiFi while in AP mode:
 3. Once connected, the device will exit AP mode and scanning will become available
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#cannot-scan-for-wifi-networks-in-ap-mode) for more details.
+

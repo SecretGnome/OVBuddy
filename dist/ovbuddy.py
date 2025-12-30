@@ -75,16 +75,25 @@ try:
 except Exception:
     PIL_AVAILABLE = False
 
-# Optional hardware driver (Pi only)
+# Optional hardware drivers (Pi only)
 EPD_AVAILABLE = False
+LCD_AVAILABLE = False
 if OUTPUT_MODE == "hardware" and not TEST_MODE:
     try:
         import epd2in13_V4  # type: ignore  # local file in the same folder
         EPD_AVAILABLE = True
     except Exception as e:
         EPD_AVAILABLE = False
-        print(f"Warning: e-ink driver not available ({e}); falling back to terminal output.")
-        OUTPUT_MODE = "terminal"
+        # Don't change OUTPUT_MODE here - LCD might be available
+    
+    # Try to import LCD driver (luma.lcd supports ST7735 used by 1.44" LCD HAT)
+    try:
+        from luma.lcd.device import st7735  # type: ignore
+        from luma.core.interface.serial import spi as spi_serial  # type: ignore
+        LCD_AVAILABLE = True
+    except ImportError:
+        # luma.lcd not installed - that's okay, user might only have eInk
+        LCD_AVAILABLE = False
 
 # Terminal UI mode: in TEST_MODE, render a "screen-like" layout in the terminal.
 TERMINAL_UI = os.getenv("OVBUDDY_TERMINAL_UI", "0") == "1"
@@ -315,7 +324,7 @@ class SimDisplayBackend(DisplayBackend):
 
 
 class HardwareEinkBackend(DisplayBackend):
-    name = "hardware"
+    name = "hardware_eink"
     supports_pil = True
 
     def __init__(self, epd):
@@ -359,6 +368,103 @@ class HardwareEinkBackend(DisplayBackend):
             pass
 
 
+class HardwareLCDBackend(DisplayBackend):
+    """Backend for Waveshare 1.44" LCD HAT (ST7735 controller)."""
+    name = "hardware_lcd"
+    supports_pil = True
+
+    def __init__(self, device):
+        self.device = device
+        # LCD dimensions for 1.44" HAT: 128x128 pixels
+        self.width = 128
+        self.height = 128
+
+    def clear(self, inverted=False):
+        try:
+            # Clear the LCD display by creating a blank image
+            from PIL import Image
+            fill_color = 0 if inverted else 255
+            if hasattr(self.device, 'mode') and self.device.mode == 'RGB':
+                # Color LCD - use RGB
+                clear_img = Image.new('RGB', (self.width, self.height), (fill_color, fill_color, fill_color))
+            else:
+                # Monochrome LCD
+                clear_img = Image.new('1', (self.width, self.height), fill_color)
+            self.device.display(clear_img)
+        except Exception as e:
+            print(f"Error clearing LCD: {e}")
+
+    def show_pil(self, image, partial=False, debug_line="", debug_status="", **_kwargs):
+        """Display a PIL image on the LCD."""
+        try:
+            from PIL import Image
+            
+            # Convert monochrome to RGB for color LCD display
+            # eInk images are typically '1' mode (monochrome), LCD needs RGB
+            if image.mode == '1':
+                # Convert monochrome to RGB (white/black -> white/black RGB)
+                image = image.convert('RGB')
+            elif image.mode not in ('RGB', 'RGBA'):
+                image = image.convert('RGB')
+            
+            # Handle RGBA by compositing on black background
+            if image.mode == 'RGBA':
+                bg = Image.new('RGB', image.size, (0, 0, 0))
+                bg.paste(image, mask=image.split()[3])  # Use alpha channel as mask
+                image = bg
+            
+            # Resize image to LCD dimensions if needed (128x128 for 1.44" HAT)
+            if image.size != (self.width, self.height):
+                # Maintain aspect ratio and center
+                img_ratio = image.width / image.height
+                target_ratio = self.width / self.height
+                
+                if img_ratio > target_ratio:
+                    # Image is wider - fit to width
+                    new_width = self.width
+                    new_height = int(self.width / img_ratio)
+                else:
+                    # Image is taller - fit to height
+                    new_height = self.height
+                    new_width = int(self.height * img_ratio)
+                
+                # Resize with high-quality resampling
+                resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Create a new RGB image with black background and paste centered
+                display_img = Image.new('RGB', (self.width, self.height), (0, 0, 0))
+                
+                # Center the resized image
+                x_offset = (self.width - new_width) // 2
+                y_offset = (self.height - new_height) // 2
+                display_img.paste(resized, (x_offset, y_offset))
+                image = display_img
+            
+            # Display the image (luma.lcd device.display() expects RGB PIL Image)
+            self.device.display(image)
+        except OSError as e:
+            # SPI connection error: attempt to re-init once
+            try:
+                print(f"SPI error on LCD, reinitializing: {e}")
+                # Reinitialize the device (would need device reference)
+                self.device.display(image)
+            except Exception as e2:
+                print(f"Failed to reinitialize LCD: {e2}")
+                raise
+        except Exception as e:
+            if debug_line or debug_status:
+                print(f"Error displaying image on LCD ({debug_line}{debug_status}): {e}")
+            else:
+                print(f"Error displaying image on LCD: {e}")
+
+    def sleep(self):
+        # LCD doesn't have a sleep mode like eInk, but we can clear it
+        try:
+            self.clear()
+        except Exception:
+            pass
+
+
 def create_display_backend():
     """Create the selected display backend. Returns a DisplayBackend instance."""
     mode = OUTPUT_MODE
@@ -369,19 +475,63 @@ def create_display_backend():
         out_path = os.getenv("OVBUDDY_SIM_OUT") or os.path.join(current_dir, "sim-output.png")
         return SimDisplayBackend(out_path)
 
-    # hardware
+    # hardware - check config for display type
     if TEST_MODE:
         print("Warning: TEST_MODE=1 with OVBUDDY_OUTPUT=hardware; using terminal backend instead.")
         return TerminalDisplayBackend()
-    if not EPD_AVAILABLE:
-        print("Warning: EPD driver not available; using terminal backend instead.")
-        return TerminalDisplayBackend()
+    
+    # Load config to check display_type (but don't fail if config doesn't exist yet)
+    # Try to use global DISPLAY_TYPE if config has been loaded, otherwise read from file
+    display_type = "eink"  # default
     try:
-        epd = epd2in13_V4.EPD()
-    except Exception as e:
-        print(f"Warning: failed to construct EPD object ({e}); using terminal backend.")
-        return TerminalDisplayBackend()
-    return HardwareEinkBackend(epd)
+        # Check if DISPLAY_TYPE global is already set (from load_config)
+        if 'DISPLAY_TYPE' in globals():
+            display_type = DISPLAY_TYPE
+        else:
+            # Config not loaded yet, read directly from file
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    display_type = config.get("display_type", display_type).strip().lower()
+    except Exception:
+        pass  # Use default if config can't be loaded
+    
+    if display_type == "lcd":
+        # Try LCD backend
+        if not LCD_AVAILABLE:
+            print("Warning: LCD driver (luma.lcd) not available; falling back to terminal output.")
+            print("  To install: pip3 install luma.lcd")
+            return TerminalDisplayBackend()
+        try:
+            from luma.core.interface.serial import spi as spi_serial
+            from luma.lcd.device import st7735
+            
+            # Initialize ST7735 for 1.44" LCD HAT
+            # Default pins for Waveshare 1.44" LCD HAT:
+            # - DC: GPIO 25 (pin 22)
+            # - RST: GPIO 27 (pin 13)
+            # - CS: CE0 (GPIO 8, pin 24)
+            # - SPI: SPI0
+            serial = spi_serial(port=0, device=0, gpio_DC=25, gpio_RST=27)
+            device = st7735(serial, width=128, height=128, rotate=0, h_offset=0, v_offset=0)
+            return HardwareLCDBackend(device)
+        except Exception as e:
+            print(f"Warning: failed to initialize LCD display ({e}); using terminal backend.")
+            import traceback
+            traceback.print_exc()
+            return TerminalDisplayBackend()
+    else:
+        # Default to eInk backend
+        if not EPD_AVAILABLE:
+            print("Warning: EPD driver not available; using terminal backend instead.")
+            return TerminalDisplayBackend()
+        try:
+            epd = epd2in13_V4.EPD()
+        except Exception as e:
+            print(f"Warning: failed to construct EPD object ({e}); using terminal backend.")
+            return TerminalDisplayBackend()
+        return HardwareEinkBackend(epd)
 
 # --------------------------
 # VERSION
@@ -494,6 +644,8 @@ DEFAULT_CONFIG = {
     "destination_exceptions": ["HB", "Hbf"],
     "inverted": False,
     "max_departures": 6,
+    # Display type: "eink" (default) or "lcd" (for Waveshare 1.44" LCD HAT)
+    "display_type": "eink",
     # Display orientation:
     # - bottom: ports at bottom (default)
     # - top: ports at top (equivalent to legacy flip_display=true)
@@ -545,6 +697,7 @@ DESTINATION_PREFIXES_TO_REMOVE = DEFAULT_CONFIG["destination_prefixes_to_remove"
 DESTINATION_EXCEPTIONS = DEFAULT_CONFIG["destination_exceptions"]
 INVERTED = DEFAULT_CONFIG["inverted"]
 MAX_DEPARTURES = DEFAULT_CONFIG["max_departures"]
+DISPLAY_TYPE = DEFAULT_CONFIG["display_type"]
 DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
 FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]  # derived from DISPLAY_ORIENTATION on load/save
 USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
@@ -662,7 +815,7 @@ def _apply_default_config():
     """Reset all config globals to DEFAULT_CONFIG (thread-safe; caller holds CONFIG_LOCK)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
 
@@ -674,6 +827,7 @@ def _apply_default_config():
     DESTINATION_EXCEPTIONS = DEFAULT_CONFIG["destination_exceptions"]
     INVERTED = DEFAULT_CONFIG["inverted"]
     MAX_DEPARTURES = DEFAULT_CONFIG["max_departures"]
+    DISPLAY_TYPE = DEFAULT_CONFIG["display_type"]
     DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
     FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
     USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
@@ -691,7 +845,7 @@ def load_config(force: bool = False):
     """Load configuration from config.json file (unless disabled via web module settings)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     global CONFIG_LAST_MODIFIED
@@ -733,6 +887,12 @@ def load_config(force: bool = False):
             DESTINATION_EXCEPTIONS = config.get("destination_exceptions", DEFAULT_CONFIG["destination_exceptions"])
             INVERTED = _parse_bool(config.get("inverted", DEFAULT_CONFIG["inverted"]), DEFAULT_CONFIG["inverted"])
             MAX_DEPARTURES = max(1, min(20, int(config.get("max_departures", DEFAULT_CONFIG["max_departures"]))))
+            # Display type: "eink" or "lcd"
+            raw_display_type = config.get("display_type", DEFAULT_CONFIG["display_type"])
+            if isinstance(raw_display_type, str) and raw_display_type.strip().lower() in ("eink", "lcd"):
+                DISPLAY_TYPE = raw_display_type.strip().lower()
+            else:
+                DISPLAY_TYPE = DEFAULT_CONFIG["display_type"]
             # Orientation: prefer new field, otherwise fall back to legacy flip_display
             raw_orientation = config.get("display_orientation", None)
             if isinstance(raw_orientation, str) and raw_orientation.strip().lower() in ("bottom", "top", "left", "right"):
@@ -778,6 +938,7 @@ def save_config():
             "destination_exceptions": DESTINATION_EXCEPTIONS,
             "inverted": INVERTED,
             "max_departures": MAX_DEPARTURES,
+            "display_type": DISPLAY_TYPE,
             "display_orientation": DISPLAY_ORIENTATION,
             "flip_display": (DISPLAY_ORIENTATION == "top"),
             "use_partial_refresh": USE_PARTIAL_REFRESH,
@@ -820,6 +981,7 @@ def get_config_dict():
             "destination_exceptions": DESTINATION_EXCEPTIONS,
             "inverted": INVERTED,
             "max_departures": MAX_DEPARTURES,
+            "display_type": DISPLAY_TYPE,
             "display_orientation": DISPLAY_ORIENTATION,
             "flip_display": (DISPLAY_ORIENTATION == "top"),
             "use_partial_refresh": USE_PARTIAL_REFRESH,
@@ -838,7 +1000,7 @@ def update_config(new_config):
     """Update configuration from a dictionary (thread-safe)"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     
@@ -864,6 +1026,10 @@ def update_config(new_config):
             INVERTED = _parse_bool(new_config["inverted"], INVERTED)
         if "max_departures" in new_config:
             MAX_DEPARTURES = max(1, min(20, int(new_config["max_departures"])))
+        if "display_type" in new_config and isinstance(new_config["display_type"], str):
+            dt = new_config["display_type"].strip().lower()
+            if dt in ("eink", "lcd"):
+                DISPLAY_TYPE = dt
         if "display_orientation" in new_config and isinstance(new_config["display_orientation"], str):
             o = new_config["display_orientation"].strip().lower()
             if o in ("bottom", "top", "left", "right"):
@@ -4384,8 +4550,8 @@ def main(test_mode_arg=False, disable_web=False):
     display = create_display_backend()
 
     if isinstance(display, HardwareEinkBackend):
-        # Initialize Waveshare display with retry logic to handle GPIO busy errors
-        print("Initializing display hardware...")
+        # Initialize Waveshare eInk display with retry logic to handle GPIO busy errors
+        print("Initializing eInk display hardware...")
         max_retries = 5
         retry_delay = 2
 
@@ -4393,7 +4559,7 @@ def main(test_mode_arg=False, disable_web=False):
             try:
                 display.epd.init()
                 display.clear(inverted=INVERTED)
-                print("Display initialized and cleared")
+                print("eInk display initialized and cleared")
                 # Show loading screen immediately
                 render_loading_screen(display)
                 break
@@ -4408,15 +4574,26 @@ def main(test_mode_arg=False, disable_web=False):
                         except Exception:
                             pass
                         continue
-                    print(f"ERROR: Failed to initialize display after {max_retries} attempts: {e}")
+                    print(f"ERROR: Failed to initialize eInk display after {max_retries} attempts: {e}")
                     print("GPIO pins appear to be in use by another process.")
                     print("Try: sudo systemctl stop ovbuddy && sleep 2 && sudo systemctl start ovbuddy")
                     # Fall back to terminal output so the program keeps running.
                     display = TerminalDisplayBackend()
                     break
-                print(f"ERROR: Failed to initialize display: {e}")
+                print(f"ERROR: Failed to initialize eInk display: {e}")
                 display = TerminalDisplayBackend()
                 break
+    elif isinstance(display, HardwareLCDBackend):
+        # Initialize LCD display
+        print("Initializing LCD display hardware...")
+        try:
+            display.clear(inverted=INVERTED)
+            print("LCD display initialized and cleared")
+            # Show loading screen immediately
+            render_loading_screen(display)
+        except Exception as e:
+            print(f"ERROR: Failed to initialize LCD display: {e}")
+            display = TerminalDisplayBackend()
     else:
         # Terminal/sim backends don't require initialization.
         if TEST_MODE:

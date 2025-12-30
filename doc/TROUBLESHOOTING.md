@@ -97,3 +97,4 @@ Or on the Pi:
 sudo systemctl status ovbuddy ovbuddy-web ovbuddy-wifi avahi-daemon
 sudo journalctl -u ovbuddy -u ovbuddy-web -n 100 --no-pager
 ```
+

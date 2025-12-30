@@ -17,6 +17,7 @@
   "auto_update": true,
   "ap_password": "password",
   "display_ap_password": true,
+  "display_type": "lcd",
   "last_wifi_ssid": "",
   "last_wifi_password": "",
   "known_wifis": {}

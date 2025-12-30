@@ -3,10 +3,11 @@
 # Deployment script for ovbuddy to Raspberry Pi
 # Reads credentials from .env file
 # Deploys all files from the dist/ folder
-# Usage: ./scripts/deploy.sh [-main] [-reboot] [-skip-deploy]
+# Usage: ./scripts/deploy.sh [-main] [-reboot] [-skip-deploy] [-f|--file FILE]
 #   -main        : deploy only ovbuddy.py
 #   -reboot      : reboot device after deployment and check service status
 #   -skip-deploy : skip file deployment, but continue with Python deps and rest of setup
+#   -f|--file FILE: deploy a single file (relative to dist/), preserves directory structure
 
 # Change to project root directory (parent of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,14 +60,27 @@ fi
 DEPLOY_MAIN_ONLY=false
 REBOOT_AFTER=false
 SKIP_DEPLOY=false
-for arg in "$@"; do
+DEPLOY_FILE=""
+i=1
+while [ $i -le $# ]; do
+    arg="${!i}"
     if [ "$arg" == "-main" ]; then
         DEPLOY_MAIN_ONLY=true
     elif [ "$arg" == "-reboot" ]; then
         REBOOT_AFTER=true
     elif [ "$arg" == "-skip-deploy" ] || [ "$arg" == "--skip-deploy" ]; then
         SKIP_DEPLOY=true
+    elif [ "$arg" == "-f" ] || [ "$arg" == "--file" ] || [ "$arg" == "-file" ]; then
+        # Get the next argument as the file path
+        i=$((i + 1))
+        if [ $i -le $# ]; then
+            DEPLOY_FILE="${!i}"
+        else
+            echo -e "${RED}Error: -f/--file requires a file path${NC}"
+            exit 1
+        fi
     fi
+    i=$((i + 1))
 done
 
 # Colors for output
@@ -203,7 +217,60 @@ if [[ "$PI_HOST" == *.local ]]; then
     fi
 fi
 
-if [ "$SKIP_DEPLOY" == true ]; then
+if [ -n "$DEPLOY_FILE" ]; then
+    # Single file deployment mode
+    echo -e "${YELLOW}Deploying single file: ${DEPLOY_FILE}${NC}"
+    
+    # Check if file exists in dist directory
+    SOURCE_FILE="$DIST_DIR/$DEPLOY_FILE"
+    if [ ! -f "$SOURCE_FILE" ] && [ ! -d "$SOURCE_FILE" ]; then
+        echo -e "${RED}Error: File not found: $SOURCE_FILE${NC}"
+        exit 1
+    fi
+    
+    # Create remote directory if it doesn't exist
+    echo "Creating remote directory..."
+    sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "mkdir -p ${REMOTE_DIR}"
+    
+    # Determine remote path - preserve directory structure
+    REMOTE_PATH="${REMOTE_DIR}/${DEPLOY_FILE}"
+    
+    # If file is in a subdirectory, ensure parent directory exists on remote
+    if [[ "$DEPLOY_FILE" == *"/"* ]]; then
+        REMOTE_FILE_DIR=$(dirname "$REMOTE_PATH")
+        sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "mkdir -p ${REMOTE_FILE_DIR}"
+    fi
+    
+    # Deploy the file or directory
+    echo "  → $DEPLOY_FILE → $REMOTE_PATH"
+    if [ -d "$SOURCE_FILE" ]; then
+        # It's a directory, use recursive copy
+        # For directories, we need to copy to the parent of where we want it
+        # e.g., dist/templates/ -> copy to /home/pi/ovbuddy/ creates /home/pi/ovbuddy/templates/
+        # Remove trailing slash if present for dirname to work correctly
+        DEPLOY_FILE_CLEAN="${DEPLOY_FILE%/}"
+        if [[ "$DEPLOY_FILE_CLEAN" == *"/"* ]]; then
+            # Directory is in a subdirectory, copy to its parent on remote
+            REMOTE_PARENT="${REMOTE_DIR}/$(dirname "$DEPLOY_FILE_CLEAN")"
+            sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "mkdir -p ${REMOTE_PARENT}"
+            sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$SOURCE_FILE" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_PARENT}/"
+        else
+            # Directory is in root of dist/, copy directly to REMOTE_DIR
+            sshpass -p "$PI_PASSWORD" scp $SCP_OPTS -r "$SOURCE_FILE" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_DIR}/"
+        fi
+    else
+        # It's a file - copy directly to the target path
+        sshpass -p "$PI_PASSWORD" scp $SCP_OPTS "$SOURCE_FILE" "${PI_USER}@${PI_SSH_HOST}:${REMOTE_PATH}"
+    fi
+    
+    echo -e "${GREEN}File deployed successfully!${NC}"
+    echo ""
+    echo "Note: Single file deployment mode. Python deps, services, and other setup steps are skipped."
+    echo "      To deploy everything, run without -f/--file."
+    
+    # Exit early - skip all other deployment steps
+    exit 0
+elif [ "$SKIP_DEPLOY" == true ]; then
     echo -e "${YELLOW}Skipping file deployment (continuing with Python deps and setup)...${NC}"
     echo -e "${YELLOW}Connecting to ${PI_USER}@${PI_SSH_HOST}...${NC}"
     # Still ensure remote directory exists (needed for zeroconf package copy)
@@ -408,11 +475,46 @@ if [ "$DEPLOY_MAIN_ONLY" != true ]; then
         LGPIO_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "python3 -c 'import lgpio' 2>/dev/null && echo 'true' || echo 'false'")
         if [ "$LGPIO_INSTALLED" != "true" ]; then
             echo -e "${YELLOW}  Installing lgpio (GPIO cleanup)...${NC}"
+            # lgpio requires swig to build - install it first if missing
+            SWIG_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "command -v swig >/dev/null 2>&1 && echo 'true' || echo 'false'")
+            if [ "$SWIG_INSTALLED" != "true" ]; then
+                echo -e "${YELLOW}    Installing swig (required for lgpio)...${NC}"
+                sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "sudo apt-get install -y swig 2>/dev/null" || {
+                    echo -e "${YELLOW}    ⚠ Could not install swig (lgpio may fail to build)${NC}"
+                }
+            fi
             sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && pip3 install --user lgpio 2>/dev/null" || \
-            sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && pip3 install --break-system-packages lgpio"
-            echo -e "${GREEN}  ✓ lgpio installed${NC}"
+            sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && pip3 install --break-system-packages lgpio" || {
+                echo -e "${YELLOW}  ⚠ lgpio installation failed (optional, GPIO cleanup may not work)${NC}"
+            }
+            # Re-check after installation attempt
+            LGPIO_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "python3 -c 'import lgpio' 2>/dev/null && echo 'true' || echo 'false'")
+            if [ "$LGPIO_INSTALLED" = "true" ]; then
+                echo -e "${GREEN}  ✓ lgpio installed${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ lgpio not available (optional dependency)${NC}"
+            fi
         else
             echo -e "${GREEN}  ✓ lgpio already installed${NC}"
+        fi
+        
+        # luma.lcd (optional, required for Waveshare 1.44" LCD HAT support)
+        LUMALCD_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "python3 -c 'from luma.lcd.device import st7735; from luma.core.interface.serial import spi as spi_serial' 2>/dev/null && echo 'true' || echo 'false'")
+        if [ "$LUMALCD_INSTALLED" != "true" ]; then
+            echo -e "${YELLOW}  Installing luma.lcd (optional, for LCD HAT support)...${NC}"
+            sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && pip3 install --user luma.lcd 2>/dev/null" || \
+            sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "cd ${REMOTE_DIR} && pip3 install --break-system-packages luma.lcd" || {
+                echo -e "${YELLOW}  ⚠ luma.lcd installation failed (optional, LCD HAT support will not be available)${NC}"
+            }
+            # Re-check after installation attempt
+            LUMALCD_INSTALLED=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "python3 -c 'from luma.lcd.device import st7735; from luma.core.interface.serial import spi as spi_serial' 2>/dev/null && echo 'true' || echo 'false'")
+            if [ "$LUMALCD_INSTALLED" = "true" ]; then
+                echo -e "${GREEN}  ✓ luma.lcd installed${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ luma.lcd not available (optional, only needed for LCD HAT)${NC}"
+            fi
+        else
+            echo -e "${GREEN}  ✓ luma.lcd already installed${NC}"
         fi
         
         # zeroconf (optional, for Bonjour/mDNS support)
