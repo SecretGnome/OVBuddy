@@ -174,6 +174,13 @@ function loadConfiguration() {
             if (orientationSelect) {
                 orientationSelect.value = data.display_orientation || (data.flip_display ? 'top' : 'bottom');
             }
+            // Departure layout
+            const departureLayoutSelect = document.getElementById('departure_layout');
+            if (departureLayoutSelect) {
+                departureLayoutSelect.value = data.departure_layout || '1row';
+            }
+            document.getElementById('destination_scroll').checked = data.destination_scroll || false;
+            document.getElementById('lcd_refresh_rate').value = data.lcd_refresh_rate || 30;
             document.getElementById('use_partial_refresh').checked = data.use_partial_refresh || false;
             document.getElementById('auto_update').checked = data.auto_update !== undefined ? data.auto_update : true;
             document.getElementById('ap_fallback_enabled').checked = data.ap_fallback_enabled !== undefined ? data.ap_fallback_enabled : true;
@@ -332,6 +339,9 @@ function saveConfiguration(event) {
         max_departures: parseInt(document.getElementById('max_departures').value),
         inverted: document.getElementById('inverted').checked,
         display_orientation: (document.getElementById('display_orientation')?.value || 'bottom'),
+        departure_layout: (document.getElementById('departure_layout')?.value || '1row'),
+        destination_scroll: document.getElementById('destination_scroll').checked,
+        lcd_refresh_rate: parseInt(document.getElementById('lcd_refresh_rate').value) || 30,
         use_partial_refresh: document.getElementById('use_partial_refresh').checked,
         auto_update: document.getElementById('auto_update').checked,
         ap_fallback_enabled: document.getElementById('ap_fallback_enabled').checked,
@@ -353,16 +363,40 @@ function saveConfiguration(event) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            showMessage('Configuration saved successfully! [OK]', 'success');
-            // Show restart snackbar
-            showRestartSnackbar();
+            showMessage('Configuration saved successfully! Reloading...', 'success');
+            // Trigger config reload in main service
+            return fetch('/api/reload-config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
         } else {
             showMessage('Error: ' + (data.error || 'Failed to save configuration'), 'error');
+            return Promise.reject(new Error('Config save failed'));
+        }
+    })
+    .then(response => {
+        if (response) {
+            return response.json();
+        }
+    })
+    .then(data => {
+        if (data && data.success) {
+            showMessage('Configuration saved and reloaded! Changes are now active.', 'success');
+        } else if (data) {
+            // Reload might have failed, but config was saved
+            showMessage('Configuration saved! Changes will be applied on next refresh.', 'success');
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        showMessage('Error saving configuration', 'error');
+        // Config might have been saved even if reload failed
+        if (!error.message || !error.message.includes('Config save failed')) {
+            showMessage('Configuration saved, but reload may have failed. Changes will be applied shortly.', 'success');
+        } else {
+            showMessage('Error saving configuration', 'error');
+        }
     });
 }
 

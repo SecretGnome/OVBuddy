@@ -20,14 +20,17 @@ Usage:
   ./setup-sd-card.sh
 
 Automation / non-interactive options:
-  --disk <diskN>     Target disk identifier (example: disk2)
-  --yes              Skip confirmations (requires --disk for safety)
-  --method <1|2>     Setup method: 1 = Automated CLI, 2 = Manual GUI (Raspberry Pi Imager)
-  -h, --help         Show this help
+  --disk <diskN>        Target disk identifier (example: disk2)
+  --yes                 Skip confirmations (requires --disk for safety)
+  --method <1|2>        Setup method: 1 = Automated CLI, 2 = Manual GUI (Raspberry Pi Imager)
+  --pi-model <zero|4>   Raspberry Pi model: zero (Pi Zero W) or 4 (Pi 4) [default: zero]
+  --os-variant <lite|full> OS variant: lite or full [default: lite]
+  -h, --help            Show this help
 
 Notes:
   - If `setup.env` exists, WiFi/hostname/user/password are loaded from it.
   - The automated CLI method is destructive: it will erase the target disk.
+  - Pi Zero W uses 32-bit images, Pi 4 can use 32-bit or 64-bit (defaults to 64-bit for full, 32-bit for lite)
 EOF
 }
 
@@ -35,6 +38,8 @@ EOF
 DISK_ID_ARG=""
 ASSUME_YES=false
 METHOD_ARG=""
+PI_MODEL_ARG=""
+OS_VARIANT_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -48,6 +53,14 @@ while [[ $# -gt 0 ]]; do
         --method)
             shift
             METHOD_ARG="${1:-}"
+            ;;
+        --pi-model)
+            shift
+            PI_MODEL_ARG="${1:-}"
+            ;;
+        --os-variant)
+            shift
+            OS_VARIANT_ARG="${1:-}"
             ;;
         -h|--help)
             usage
@@ -68,7 +81,7 @@ done
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          OVBuddy SD Card Setup Helper                      ║${NC}"
-echo -e "${BLUE}║     For Raspberry Pi Zero W 1.1 with RPi OS Lite          ║${NC}"
+echo -e "${BLUE}║     Supports Pi Zero W and Pi 4, Lite and Full OS         ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -84,6 +97,94 @@ echo ""
 echo "Requirements:"
 echo "  - SD card (8GB or larger recommended)"
 echo "  - WiFi network credentials"
+echo ""
+
+# Select Pi model
+PI_MODEL=""
+if [[ -n "$PI_MODEL_ARG" ]]; then
+    PI_MODEL="$PI_MODEL_ARG"
+    if [[ "$PI_MODEL" != "zero" && "$PI_MODEL" != "4" ]]; then
+        echo -e "${RED}Error: --pi-model must be 'zero' or '4'${NC}"
+        exit 1
+    fi
+else
+    echo -e "${BLUE}Select Raspberry Pi model:${NC}"
+    echo "  1. Raspberry Pi Zero W (32-bit only)"
+    echo "  2. Raspberry Pi 4 (32-bit or 64-bit)"
+    echo ""
+    read -p "Enter choice (1 or 2, default: 1): " PI_CHOICE
+    PI_CHOICE=${PI_CHOICE:-1}
+    
+    if [[ "$PI_CHOICE" == "1" ]]; then
+        PI_MODEL="zero"
+    elif [[ "$PI_CHOICE" == "2" ]]; then
+        PI_MODEL="4"
+    else
+        echo -e "${RED}Invalid choice. Exiting.${NC}"
+        exit 1
+    fi
+    echo ""
+fi
+
+# Select OS variant
+OS_VARIANT=""
+if [[ -n "$OS_VARIANT_ARG" ]]; then
+    OS_VARIANT="$OS_VARIANT_ARG"
+    if [[ "$OS_VARIANT" != "lite" && "$OS_VARIANT" != "full" ]]; then
+        echo -e "${RED}Error: --os-variant must be 'lite' or 'full'${NC}"
+        exit 1
+    fi
+else
+    echo -e "${BLUE}Select OS variant:${NC}"
+    echo "  1. Lite (minimal, no desktop environment)"
+    echo "  2. Full (includes desktop environment)"
+    echo ""
+    read -p "Enter choice (1 or 2, default: 1): " OS_CHOICE
+    OS_CHOICE=${OS_CHOICE:-1}
+    
+    if [[ "$OS_CHOICE" == "1" ]]; then
+        OS_VARIANT="lite"
+    elif [[ "$OS_CHOICE" == "2" ]]; then
+        OS_VARIANT="full"
+    else
+        echo -e "${RED}Invalid choice. Exiting.${NC}"
+        exit 1
+    fi
+    echo ""
+fi
+
+# Determine architecture based on Pi model and OS variant
+# Pi Zero W: 32-bit only (armhf)
+# Pi 4: 64-bit for full (arm64), 32-bit for lite (armhf) by default, but allow 64-bit lite too
+ARCH="armhf"
+if [[ "$PI_MODEL" == "4" && "$OS_VARIANT" == "full" ]]; then
+    # Pi 4 Full defaults to 64-bit
+    ARCH="arm64"
+elif [[ "$PI_MODEL" == "4" && "$OS_VARIANT" == "lite" ]]; then
+    # Pi 4 Lite: ask if user wants 64-bit
+    if [[ -z "$OS_VARIANT_ARG" ]]; then
+        echo -e "${BLUE}Select architecture for Pi 4 Lite:${NC}"
+        echo "  1. 32-bit (armhf) - recommended for compatibility"
+        echo "  2. 64-bit (arm64) - better performance"
+        echo ""
+        read -p "Enter choice (1 or 2, default: 1): " ARCH_CHOICE
+        ARCH_CHOICE=${ARCH_CHOICE:-1}
+        
+        if [[ "$ARCH_CHOICE" == "2" ]]; then
+            ARCH="arm64"
+        fi
+        echo ""
+    else
+        # Non-interactive: default to 32-bit for lite
+        ARCH="armhf"
+    fi
+fi
+
+# Display selection summary
+echo -e "${GREEN}Selected configuration:${NC}"
+echo "  Pi Model: Raspberry Pi $([ "$PI_MODEL" == "zero" ] && echo "Zero W" || echo "4")"
+echo "  OS Variant: $([ "$OS_VARIANT" == "lite" ] && echo "Lite" || echo "Full")"
+echo "  Architecture: $ARCH"
 echo ""
 
 # Check for setup.env file
@@ -286,17 +387,46 @@ if [[ "$SETUP_METHOD" == "1" ]]; then
     # Set trap for cleanup on exit, interrupt, or error
     trap cleanup EXIT INT TERM
     
-    # Raspberry Pi OS (Legacy, 32-bit) Lite - Debian Bookworm
-    # Release: 24 Nov 2025 - Compatible with Pi Zero W
-    # Source: https://www.raspberrypi.com/software/operating-systems/
-    # Official SHA256: 2a6ff6474218e5e83b6448771e902a4e5e06a86b9604b3b02f8d69ccc5bfb47b
-    IMAGE_URL="https://downloads.raspberrypi.com/raspios_oldstable_lite_armhf_latest"
+    # Determine image URL and SHA256 based on selections
+    # Note: SHA256 checksums need to be updated when new images are released
+    # For now, we'll use the latest images and note that checksums may need updating
     IMAGE_FILE="$TEMP_DIR/raspios.img.xz"
-    IMAGE_SHA256="2a6ff6474218e5e83b6448771e902a4e5e06a86b9604b3b02f8d69ccc5bfb47b"
+    
+    # Build image URL based on variant and architecture
+    if [[ "$OS_VARIANT" == "lite" ]]; then
+        if [[ "$ARCH" == "armhf" ]]; then
+            # 32-bit Lite
+            IMAGE_URL="https://downloads.raspberrypi.com/raspios_oldstable_lite_armhf_latest"
+            IMAGE_SHA256="2a6ff6474218e5e83b6448771e902a4e5e06a86b9604b3b02f8d69ccc5bfb47b"
+            OS_DESC="Lite (32-bit)"
+        else
+            # 64-bit Lite
+            IMAGE_URL="https://downloads.raspberrypi.com/raspios_oldstable_lite_arm64_latest"
+            # Note: Update SHA256 when you verify the download
+            IMAGE_SHA256=""  # Will skip verification if empty
+            OS_DESC="Lite (64-bit)"
+        fi
+    else
+        # Full OS
+        if [[ "$ARCH" == "armhf" ]]; then
+            # 32-bit Full
+            IMAGE_URL="https://downloads.raspberrypi.com/raspios_oldstable_armhf_latest"
+            # Note: Update SHA256 when you verify the download
+            IMAGE_SHA256=""  # Will skip verification if empty
+            OS_DESC="Full (32-bit)"
+        else
+            # 64-bit Full
+            IMAGE_URL="https://downloads.raspberrypi.com/raspios_oldstable_arm64_latest"
+            # Note: Update SHA256 when you verify the download
+            IMAGE_SHA256=""  # Will skip verification if empty
+            OS_DESC="Full (64-bit)"
+        fi
+    fi
     
     echo ""
-    echo -e "${YELLOW}Downloading Raspberry Pi OS Lite (32-bit)...${NC}"
-    echo "Release: Debian Bookworm (configured for Pi Zero W compatibility)"
+    echo -e "${YELLOW}Downloading Raspberry Pi OS ${OS_DESC}...${NC}"
+    echo "Release: Debian Bookworm"
+    echo "Compatible with: Raspberry Pi $([ "$PI_MODEL" == "zero" ] && echo "Zero W" || echo "4")"
     echo "This may take several minutes depending on your connection."
     echo ""
     
@@ -341,28 +471,34 @@ if [[ "$SETUP_METHOD" == "1" ]]; then
         fi
     fi
     
-    # Verify SHA256 checksum
-    echo -e "${YELLOW}Verifying image integrity...${NC}"
-    if command -v shasum &> /dev/null; then
-        DOWNLOADED_SHA256=$(shasum -a 256 "$IMAGE_FILE" | awk '{print $1}')
-    elif command -v sha256sum &> /dev/null; then
-        DOWNLOADED_SHA256=$(sha256sum "$IMAGE_FILE" | awk '{print $1}')
-    else
-        echo -e "${YELLOW}Warning: Neither shasum nor sha256sum found. Skipping checksum verification.${NC}"
-        DOWNLOADED_SHA256="$IMAGE_SHA256"
-    fi
-    
-    if [[ "$DOWNLOADED_SHA256" != "$IMAGE_SHA256" ]]; then
-        echo -e "${RED}Error: SHA256 checksum mismatch!${NC}"
-        echo "Expected: $IMAGE_SHA256"
-        echo "Got:      $DOWNLOADED_SHA256"
+    # Verify SHA256 checksum (if available)
+    if [[ -n "$IMAGE_SHA256" ]]; then
+        echo -e "${YELLOW}Verifying image integrity...${NC}"
+        if command -v shasum &> /dev/null; then
+            DOWNLOADED_SHA256=$(shasum -a 256 "$IMAGE_FILE" | awk '{print $1}')
+        elif command -v sha256sum &> /dev/null; then
+            DOWNLOADED_SHA256=$(sha256sum "$IMAGE_FILE" | awk '{print $1}')
+        else
+            echo -e "${YELLOW}Warning: Neither shasum nor sha256sum found. Skipping checksum verification.${NC}"
+            DOWNLOADED_SHA256="$IMAGE_SHA256"
+        fi
+        
+        if [[ "$DOWNLOADED_SHA256" != "$IMAGE_SHA256" ]]; then
+            echo -e "${RED}Error: SHA256 checksum mismatch!${NC}"
+            echo "Expected: $IMAGE_SHA256"
+            echo "Got:      $DOWNLOADED_SHA256"
+            echo ""
+            echo "The downloaded file may be corrupted. Please try again."
+            exit 1
+        fi
+        
+        echo -e "${GREEN}✓ Image integrity verified${NC}"
         echo ""
-        echo "The downloaded file may be corrupted. Please try again."
-        exit 1
+    else
+        echo -e "${YELLOW}⚠ SHA256 checksum not configured for this image variant.${NC}"
+        echo -e "${YELLOW}  Skipping integrity check. Please verify the download manually if needed.${NC}"
+        echo ""
     fi
-    
-    echo -e "${GREEN}✓ Image integrity verified${NC}"
-    echo ""
     
     # Unmount the disk (but don't eject it)
     echo -e "${YELLOW}Unmounting disk...${NC}"
@@ -879,7 +1015,7 @@ FIRSTRUN_EOF
     echo ""
     echo "Your SD card is ready! Next steps:"
     echo ""
-    echo "1. Insert the SD card into your Raspberry Pi Zero W"
+    echo "1. Insert the SD card into your Raspberry Pi $([ "$PI_MODEL" == "zero" ] && echo "Zero W" || echo "4")"
     echo "2. Power on the Pi"
     echo ""
     echo "   First boot (2-3 minutes):"
@@ -942,12 +1078,28 @@ else
     echo "1. Launch Raspberry Pi Imager"
     echo ""
     echo "2. Click 'CHOOSE DEVICE' and select:"
-    echo "   → Raspberry Pi Zero W"
+    if [[ "$PI_MODEL" == "zero" ]]; then
+        echo "   → Raspberry Pi Zero W"
+    else
+        echo "   → Raspberry Pi 4"
+    fi
     echo ""
     echo "3. Click 'CHOOSE OS' and select:"
     echo "   → Raspberry Pi OS (other)"
-    echo "   → Raspberry Pi OS Lite (32-bit)"
-    echo "   → Latest version (Bookworm) - works with Pi Zero W"
+    if [[ "$OS_VARIANT" == "lite" ]]; then
+        if [[ "$ARCH" == "armhf" ]]; then
+            echo "   → Raspberry Pi OS Lite (32-bit)"
+        else
+            echo "   → Raspberry Pi OS Lite (64-bit)"
+        fi
+    else
+        if [[ "$ARCH" == "armhf" ]]; then
+            echo "   → Raspberry Pi OS (32-bit) - with desktop"
+        else
+            echo "   → Raspberry Pi OS (64-bit) - with desktop"
+        fi
+    fi
+    echo "   → Latest version (Bookworm)"
     echo ""
     echo "4. Click 'CHOOSE STORAGE' and select your SD card"
     echo ""

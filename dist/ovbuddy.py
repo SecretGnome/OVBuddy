@@ -224,6 +224,11 @@ class DisplayBackend:
     """Abstract display backend: hardware, terminal, or simulator."""
     name = "base"
     supports_pil = False
+    
+    # Default dimensions (eInk 2.13" display)
+    # Subclasses should override these for their specific display
+    width = 250
+    height = 122
 
     def clear(self, inverted=False):
         return None
@@ -326,6 +331,9 @@ class SimDisplayBackend(DisplayBackend):
 class HardwareEinkBackend(DisplayBackend):
     name = "hardware_eink"
     supports_pil = True
+    # eInk 2.13" display dimensions
+    width = 250
+    height = 122
 
     def __init__(self, epd):
         self.epd = epd
@@ -382,14 +390,11 @@ class HardwareLCDBackend(DisplayBackend):
     def clear(self, inverted=False):
         try:
             # Clear the LCD display by creating a blank image
+            # Always use RGB mode for ST7735 color LCD
             from PIL import Image
             fill_color = 0 if inverted else 255
-            if hasattr(self.device, 'mode') and self.device.mode == 'RGB':
-                # Color LCD - use RGB
-                clear_img = Image.new('RGB', (self.width, self.height), (fill_color, fill_color, fill_color))
-            else:
-                # Monochrome LCD
-                clear_img = Image.new('1', (self.width, self.height), fill_color)
+            # Create RGB image to ensure full buffer is cleared
+            clear_img = Image.new('RGB', (self.width, self.height), (fill_color, fill_color, fill_color))
             self.device.display(clear_img)
         except Exception as e:
             print(f"Error clearing LCD: {e}")
@@ -413,7 +418,7 @@ class HardwareLCDBackend(DisplayBackend):
                 bg.paste(image, mask=image.split()[3])  # Use alpha channel as mask
                 image = bg
             
-            # Resize image to LCD dimensions if needed (128x128 for 1.44" HAT)
+            # Ensure image is exactly LCD dimensions (128x128) to prevent edge artifacts
             if image.size != (self.width, self.height):
                 # Maintain aspect ratio and center
                 img_ratio = image.width / image.height
@@ -432,6 +437,7 @@ class HardwareLCDBackend(DisplayBackend):
                 resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 
                 # Create a new RGB image with black background and paste centered
+                # Always create exactly (width, height) to fill entire buffer
                 display_img = Image.new('RGB', (self.width, self.height), (0, 0, 0))
                 
                 # Center the resized image
@@ -439,8 +445,13 @@ class HardwareLCDBackend(DisplayBackend):
                 y_offset = (self.height - new_height) // 2
                 display_img.paste(resized, (x_offset, y_offset))
                 image = display_img
+            else:
+                # Image is already correct size, but ensure it's RGB mode
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
             
             # Display the image (luma.lcd device.display() expects RGB PIL Image)
+            # The offsets in device initialization should prevent edge artifacts
             self.device.display(image)
         except OSError as e:
             # SPI connection error: attempt to re-init once
@@ -513,8 +524,10 @@ def create_display_backend():
             # - RST: GPIO 27 (pin 13)
             # - CS: CE0 (GPIO 8, pin 24)
             # - SPI: SPI0
+            # Note: h_offset and v_offset help align the visible area and prevent edge artifacts
+            # Common values for ST7735R: h_offset=2, v_offset=3
             serial = spi_serial(port=0, device=0, gpio_DC=25, gpio_RST=27)
-            device = st7735(serial, width=128, height=128, rotate=0, h_offset=0, v_offset=0)
+            device = st7735(serial, width=128, height=128, rotate=0, h_offset=2, v_offset=3, bgr=False)
             return HardwareLCDBackend(device)
         except Exception as e:
             print(f"Warning: failed to initialize LCD display ({e}); using terminal backend.")
@@ -655,6 +668,13 @@ DEFAULT_CONFIG = {
     # Legacy boolean; still read/written for backward compatibility.
     "flip_display": False,
     "use_partial_refresh": False,
+    # Departure layout: "1row" (default, single row per connection) or "2row" (two rows per connection)
+    "departure_layout": "1row",
+    # Destination scroll: enable scrolling destination text from right to left (LCD only, works in both 1-row and 2-row modes)
+    "destination_scroll": False,
+    # LCD refresh rate (FPS): display refresh rate for LCD screens in frames per second (1-60, default 30)
+    # Higher values enable smoother scrolling but use more CPU. Only applies to LCD displays.
+    "lcd_refresh_rate": 30,
     # Keep this in sync with the web UI footer link + the canonical upstream repo.
     "update_repository_url": "https://github.com/SecretGnome/OVBuddy",
     "auto_update": True,
@@ -701,6 +721,9 @@ DISPLAY_TYPE = DEFAULT_CONFIG["display_type"]
 DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
 FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]  # derived from DISPLAY_ORIENTATION on load/save
 USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
+DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
+DESTINATION_SCROLL = DEFAULT_CONFIG["destination_scroll"]
+LCD_REFRESH_RATE = DEFAULT_CONFIG["lcd_refresh_rate"]
 UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
 AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
 AP_FALLBACK_ENABLED = DEFAULT_CONFIG["ap_fallback_enabled"]
@@ -735,6 +758,11 @@ if OUTPUT_MODE == "sim":
     if _sim_w > 0 and _sim_h > 0:
         DISPLAY_WIDTH = _sim_w
         DISPLAY_HEIGHT = _sim_h
+
+# Scroll position tracking for destination text (LCD scrolling feature)
+# Key: destination text, Value: current scroll offset in pixels
+_DESTINATION_SCROLL_POSITIONS = {}
+_DESTINATION_SCROLL_LOCK = threading.Lock()
 
 # UI event file: used to show short feedback messages on the e-ink display
 # triggered by web actions (safe IPC between ovbuddy-web and ovbuddy display service).
@@ -786,15 +814,25 @@ def _clear_ui_event():
 def _is_portrait_orientation() -> bool:
     return DISPLAY_ORIENTATION in ("left", "right")
 
-def _new_oriented_image(bg_color: int):
+def _new_oriented_image(bg_color: int, width=None, height=None):
     """Create an image in *viewer* orientation.
 
-    - bottom/top: landscape canvas (DISPLAY_WIDTH x DISPLAY_HEIGHT)
-    - left/right: portrait canvas (DISPLAY_HEIGHT x DISPLAY_WIDTH) which will be rotated to panel coords
+    - bottom/top: landscape canvas (width x height)
+    - left/right: portrait canvas (height x width) which will be rotated to panel coords
+    
+    Args:
+        bg_color: Background color (0 or 255)
+        width: Display width (defaults to DISPLAY_WIDTH for backward compatibility)
+        height: Display height (defaults to DISPLAY_HEIGHT for backward compatibility)
     """
+    if width is None:
+        width = DISPLAY_WIDTH
+    if height is None:
+        height = DISPLAY_HEIGHT
+    
     if _is_portrait_orientation():
-        return Image.new('1', (DISPLAY_HEIGHT, DISPLAY_WIDTH), bg_color)
-    return Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        return Image.new('1', (height, width), bg_color)
+    return Image.new('1', (width, height), bg_color)
 
 def _apply_display_orientation(image):
     """Map a viewer-oriented image to the panel buffer orientation (always DISPLAY_WIDTH x DISPLAY_HEIGHT)."""
@@ -815,7 +853,7 @@ def _apply_default_config():
     """Reset all config globals to DEFAULT_CONFIG (thread-safe; caller holds CONFIG_LOCK)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
 
@@ -831,6 +869,9 @@ def _apply_default_config():
     DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
     FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
     USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
+    DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
+    DESTINATION_SCROLL = DEFAULT_CONFIG["destination_scroll"]
+    LCD_REFRESH_RATE = DEFAULT_CONFIG["lcd_refresh_rate"]
     UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
     AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
     AP_FALLBACK_ENABLED = DEFAULT_CONFIG["ap_fallback_enabled"]
@@ -845,7 +886,7 @@ def load_config(force: bool = False):
     """Load configuration from config.json file (unless disabled via web module settings)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     global CONFIG_LAST_MODIFIED
@@ -902,6 +943,16 @@ def load_config(force: bool = False):
             # Keep legacy boolean in sync
             FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
             USE_PARTIAL_REFRESH = _parse_bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]), DEFAULT_CONFIG["use_partial_refresh"])
+            # Departure layout: "1row" or "2row"
+            raw_departure_layout = config.get("departure_layout", DEFAULT_CONFIG["departure_layout"])
+            if isinstance(raw_departure_layout, str) and raw_departure_layout.strip().lower() in ("1row", "2row"):
+                DEPARTURE_LAYOUT = raw_departure_layout.strip().lower()
+            else:
+                DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
+            DESTINATION_SCROLL = _parse_bool(config.get("destination_scroll", DEFAULT_CONFIG["destination_scroll"]), DEFAULT_CONFIG["destination_scroll"])
+            # LCD refresh rate: 1-60 FPS, default 30
+            raw_lcd_refresh = config.get("lcd_refresh_rate", DEFAULT_CONFIG["lcd_refresh_rate"])
+            LCD_REFRESH_RATE = max(1, min(60, int(raw_lcd_refresh))) if isinstance(raw_lcd_refresh, (int, float)) else DEFAULT_CONFIG["lcd_refresh_rate"]
             UPDATE_REPOSITORY_URL = config.get("update_repository_url", DEFAULT_CONFIG["update_repository_url"])
             AUTO_UPDATE = _parse_bool(config.get("auto_update", DEFAULT_CONFIG["auto_update"]), DEFAULT_CONFIG["auto_update"])
             AP_FALLBACK_ENABLED = _parse_bool(config.get("ap_fallback_enabled", DEFAULT_CONFIG["ap_fallback_enabled"]), DEFAULT_CONFIG["ap_fallback_enabled"])
@@ -942,6 +993,9 @@ def save_config():
             "display_orientation": DISPLAY_ORIENTATION,
             "flip_display": (DISPLAY_ORIENTATION == "top"),
             "use_partial_refresh": USE_PARTIAL_REFRESH,
+            "departure_layout": DEPARTURE_LAYOUT,
+            "destination_scroll": DESTINATION_SCROLL,
+            "lcd_refresh_rate": LCD_REFRESH_RATE,
             "update_repository_url": UPDATE_REPOSITORY_URL,
             "ap_fallback_enabled": AP_FALLBACK_ENABLED,
             "ap_ssid": AP_SSID,
@@ -985,6 +1039,8 @@ def get_config_dict():
             "display_orientation": DISPLAY_ORIENTATION,
             "flip_display": (DISPLAY_ORIENTATION == "top"),
             "use_partial_refresh": USE_PARTIAL_REFRESH,
+            "departure_layout": DEPARTURE_LAYOUT,
+            "destination_scroll": DESTINATION_SCROLL,
             "update_repository_url": UPDATE_REPOSITORY_URL,
             "auto_update": AUTO_UPDATE,
             "ap_fallback_enabled": AP_FALLBACK_ENABLED,
@@ -1000,7 +1056,7 @@ def update_config(new_config):
     """Update configuration from a dictionary (thread-safe)"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     
@@ -1041,6 +1097,15 @@ def update_config(new_config):
             DISPLAY_ORIENTATION = "top" if FLIP_DISPLAY else "bottom"
         if "use_partial_refresh" in new_config:
             USE_PARTIAL_REFRESH = _parse_bool(new_config["use_partial_refresh"], USE_PARTIAL_REFRESH)
+        if "departure_layout" in new_config and isinstance(new_config["departure_layout"], str):
+            dl = new_config["departure_layout"].strip().lower()
+            if dl in ("1row", "2row"):
+                DEPARTURE_LAYOUT = dl
+        if "destination_scroll" in new_config:
+            DESTINATION_SCROLL = _parse_bool(new_config["destination_scroll"], DESTINATION_SCROLL)
+        if "lcd_refresh_rate" in new_config:
+            raw_lcd_refresh = new_config["lcd_refresh_rate"]
+            LCD_REFRESH_RATE = max(1, min(60, int(raw_lcd_refresh))) if isinstance(raw_lcd_refresh, (int, float)) else LCD_REFRESH_RATE
         if "update_repository_url" in new_config:
             UPDATE_REPOSITORY_URL = str(new_config["update_repository_url"])
         if "auto_update" in new_config:
@@ -1061,6 +1126,20 @@ def update_config(new_config):
             KNOWN_WIFIS = new_config["known_wifis"]
     
     return save_config()
+
+def _create_config_reload_trigger():
+    """Create a trigger file to signal the main service to reload config"""
+    try:
+        # Use the script directory (same as config file)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        trigger_file = os.path.join(script_dir, ".config_reload_trigger")
+        # Create an empty file to signal reload
+        with open(trigger_file, 'w') as f:
+            f.write("")
+        return True
+    except Exception as e:
+        print(f"Warning: Could not create config reload trigger file: {e}")
+        return False
 
 # --------------------------
 # WEB AUTH (BASIC AUTH)
@@ -2168,7 +2247,9 @@ def render_qr_code(display=None, test_mode=False):
         try:
             bg_color = 0 if INVERTED else 255
             fg_color = 255 if INVERTED else 0
-            image = _new_oriented_image(bg_color)
+            display_width = getattr(display, 'width', DISPLAY_WIDTH)
+            display_height = getattr(display, 'height', DISPLAY_HEIGHT)
+            image = _new_oriented_image(bg_color, width=display_width, height=display_height)
             draw = ImageDraw.Draw(image)
             w, h = image.size
             font = ImageFont.load_default()
@@ -2243,16 +2324,24 @@ def render_qr_code(display=None, test_mode=False):
         # Get display dimensions
         bg_color = 0 if INVERTED else 255
         fg_color = 255 if INVERTED else 0
+        display_width = getattr(display, 'width', DISPLAY_WIDTH)
+        display_height = getattr(display, 'height', DISPLAY_HEIGHT)
         
-        # Create display image
-        image = _new_oriented_image(bg_color)
+        # Create display image with display-specific dimensions
+        image = _new_oriented_image(bg_color, width=display_width, height=display_height)
         draw = ImageDraw.Draw(image)
         w, h = image.size
         
         # Split display: left side for instructions, right side for QR code
-        # Reserve more space for text (about 155 pixels), rest for QR code
-        text_area_width = 155
-        qr_area_width = w - text_area_width - 5  # 5px gap
+        # For LCD (128x128), use more compact layout; for eInk (250x122), use original layout
+        if display_width <= 128:
+            # LCD: compact layout - QR code on right, text on left
+            text_area_width = max(60, w // 2)  # At least half for text
+            qr_area_width = w - text_area_width - 3  # 3px gap
+        else:
+            # eInk: original layout
+            text_area_width = 155
+            qr_area_width = w - text_area_width - 5  # 5px gap
         
         # Resize QR code to fit in right area
         qr_width, qr_height = qr_image.size
@@ -2311,7 +2400,7 @@ def render_qr_code(display=None, test_mode=False):
             info_spacing = 6  # Space between sections
             info_height = line_height * 4  # Empty line, SSID, empty line, and IP (4 lines)
             total_height_with_info = total_text_height + info_spacing + info_height
-            start_y = (DISPLAY_HEIGHT - total_height_with_info) // 2
+            start_y = (h - total_height_with_info) // 2
             
             # Draw each line of instructions
             x = 5  # Left margin
@@ -2405,27 +2494,6 @@ def render_qr_code(display=None, test_mode=False):
                     # Fallback: just show IP:port and let it wrap if needed
                     draw.text((ip_value_x, ip_y), ip_text, font=font, fill=fg_color)
             
-            # Draw URL below the QR code (centered)
-            url_y = qr_y + qr_height + 5  # 5px below QR code
-            if url_y + line_height < DISPLAY_HEIGHT:
-                # Center the URL text below the QR code
-                url_display = url  # Full URL with http://
-                try:
-                    bbox = draw.textbbox((0, 0), url_display, font=font)
-                    url_width = bbox[2] - bbox[0]
-                except:
-                    url_width = len(url_display) * 6
-                
-                # Center under QR code
-                url_x = qr_x + (qr_width - url_width) // 2
-                # Make sure it doesn't go off screen
-                if url_x < 0:
-                    url_x = qr_x
-                if url_x + url_width > w:
-                    url_x = w - url_width - 2
-                
-                draw.text((url_x, url_y), url_display, font=font, fill=fg_color)
-            
             # Draw version number in bottom-right corner
             version_text = f"v{VERSION}"
             try:
@@ -2464,9 +2532,11 @@ def render_loading_screen(display=None, test_mode=False):
     try:
         bg_color = 0 if INVERTED else 255
         fg_color = 255 if INVERTED else 0
+        display_width = getattr(display, 'width', DISPLAY_WIDTH)
+        display_height = getattr(display, 'height', DISPLAY_HEIGHT)
         
-        # Create display image
-        image = _new_oriented_image(bg_color)
+        # Create display image with display-specific dimensions
+        image = _new_oriented_image(bg_color, width=display_width, height=display_height)
         draw = ImageDraw.Draw(image)
         w, h = image.size
         
@@ -2533,7 +2603,9 @@ def render_ap_info(ssid, password=None, display_password=False, display=None, te
         try:
             bg_color = 0 if INVERTED else 255
             fg_color = 255 if INVERTED else 0
-            image = _new_oriented_image(bg_color)
+            display_width = getattr(display, 'width', DISPLAY_WIDTH)
+            display_height = getattr(display, 'height', DISPLAY_HEIGHT)
+            image = _new_oriented_image(bg_color, width=display_width, height=display_height)
             draw = ImageDraw.Draw(image)
             w, h = image.size
             font = ImageFont.load_default()
@@ -2562,19 +2634,23 @@ def render_ap_info(ssid, password=None, display_password=False, display=None, te
     try:
         bg_color = 0 if INVERTED else 255
         fg_color = 255 if INVERTED else 0
+        display_width = getattr(display, 'width', DISPLAY_WIDTH)
+        display_height = getattr(display, 'height', DISPLAY_HEIGHT)
         
-        # Create display image
-        image = Image.new('1', (DISPLAY_WIDTH, DISPLAY_HEIGHT), bg_color)
+        # Create display image with display-specific dimensions
+        image = Image.new('1', (display_width, display_height), bg_color)
         draw = ImageDraw.Draw(image)
+        w, h = image.size
         
-        # Load fonts
+        # Load fonts - adjust size for LCD
+        font_size = 9 if display_width <= 128 else 11
         font = ImageFont.load_default()
         try:
-            font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
+            font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         except:
             font_bold = font
         
-        line_height = 14
+        line_height = 12 if display_width <= 128 else 14
         y = 5
         
         # Title
@@ -2585,12 +2661,12 @@ def render_ap_info(ssid, password=None, display_password=False, display=None, te
         except:
             title_width = len(title) * 7
         
-        title_x = (DISPLAY_WIDTH - title_width) // 2
+        title_x = (w - title_width) // 2
         draw.text((title_x, y), title, font=font_bold, fill=fg_color)
         y += line_height + 8
         
         # Separator line
-        draw.line([(5, y), (DISPLAY_WIDTH - 5, y)], fill=fg_color, width=1)
+        draw.line([(5, y), (w - 5, y)], fill=fg_color, width=1)
         y += 8
         
         # WiFi Network (SSID)
@@ -2599,7 +2675,7 @@ def render_ap_info(ssid, password=None, display_password=False, display=None, te
         
         # SSID (may need to wrap if too long)
         ssid_text = ssid
-        max_width = DISPLAY_WIDTH - 15
+        max_width = w - 15
         try:
             bbox = draw.textbbox((0, 0), ssid_text, font=font)
             text_width = bbox[2] - bbox[0]
@@ -2683,15 +2759,17 @@ def render_update_screen(display=None, status="Updating...", version=None, test_
     try:
         bg_color = 0 if INVERTED else 255
         fg_color = 255 if INVERTED else 0
+        display_width = getattr(display, 'width', DISPLAY_WIDTH)
+        display_height = getattr(display, 'height', DISPLAY_HEIGHT)
         
-        # Create display image
-        image = _new_oriented_image(bg_color)
+        # Create display image with display-specific dimensions
+        image = _new_oriented_image(bg_color, width=display_width, height=display_height)
         draw = ImageDraw.Draw(image)
         w, _h = image.size
         
-        # Load font
+        # Load font - adjust size for LCD
         font = ImageFont.load_default()
-        line_height = 12
+        line_height = 10 if display_width <= 128 else 12
         
         # Title
         title = "Updating..."
@@ -2750,11 +2828,15 @@ def render_action_screen(display=None, title="Action", message="", test_mode=Fal
     try:
         bg_color = 0 if INVERTED else 255
         fg_color = 255 if INVERTED else 0
+        display_width = getattr(display, 'width', DISPLAY_WIDTH)
+        display_height = getattr(display, 'height', DISPLAY_HEIGHT)
 
-        image = _new_oriented_image(bg_color)
+        # Create display image with display-specific dimensions
+        image = _new_oriented_image(bg_color, width=display_width, height=display_height)
         draw = ImageDraw.Draw(image)
         w, _h = image.size
 
+        # Load font - adjust size for LCD
         font = ImageFont.load_default()
         draw.text((5, 0), safe_ascii(str(title)), font=font, fill=fg_color)
         draw.line((0, 12, w, 12), fill=fg_color)
@@ -2924,8 +3006,12 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
     bg_color = 0 if INVERTED else 255  # Black if inverted, white if normal
     fg_color = 255 if INVERTED else 0  # White if inverted, black if normal
     
-    # Create a fresh image each time (don't reuse)
-    image = _new_oriented_image(bg_color)
+    # Get display dimensions (use display-specific if available, otherwise fallback to defaults)
+    display_width = getattr(display, 'width', DISPLAY_WIDTH)
+    display_height = getattr(display, 'height', DISPLAY_HEIGHT)
+    
+    # Create a fresh image each time (don't reuse) with display-specific dimensions
+    image = _new_oriented_image(bg_color, width=display_width, height=display_height)
     draw = ImageDraw.Draw(image)
     w, h = image.size
     
@@ -3096,96 +3182,343 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     line = word + " "
                 else:
                     line = test_line
-            if line and y < DISPLAY_HEIGHT - 5:
+            if line and y < h - 5:
                 draw.text((0, y), line.strip(), font=font_line, fill=fg_color)
     elif departures:
-        # Left/right orientation: simplified layout (line + time + delay only)
+        # Check if 2-row layout is enabled (works for both portrait and landscape)
+        use_2row_layout = (DEPARTURE_LAYOUT == "2row")
+        
+        # Clean up scroll positions for destinations that are no longer displayed
+        # Works for both 1-row and 2-row layouts (LCD only)
+        if DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL:
+            current_destinations = set()
+            for entry in departures[:MAX_DEPARTURES]:
+                dest_raw = entry.get("to", "")
+                dest = safe_ascii(clean_destination_name(dest_raw))
+                current_destinations.add(dest)
+            
+            with _DESTINATION_SCROLL_LOCK:
+                # Remove scroll positions for destinations not in current list
+                keys_to_remove = [k for k in _DESTINATION_SCROLL_POSITIONS.keys() if k not in current_destinations]
+                for key in keys_to_remove:
+                    del _DESTINATION_SCROLL_POSITIONS[key]
+        
         if _is_portrait_orientation():
-            y = 14
-            for entry in departures[:MAX_DEPARTURES]:
-                line_num = format_line_number(entry).strip()
-                time_str = entry["stop"]["departure"][11:16]
-                delay_str = _format_delay_suffix(entry, for_terminal=False)
-                right_text = time_str + (f" {delay_str}" if delay_str else "")
-
-                # Measure right text for alignment
-                try:
-                    bbox = draw.textbbox((0, 0), right_text, font=font_line_bold)
-                    right_w = bbox[2] - bbox[0]
-                except Exception:
-                    right_w = len(right_text) * 6
-
-                draw.text((4, y), line_num, font=font_line_bold, fill=fg_color)
-                draw.text((max(40, w - right_w - 4), y), right_text, font=font_line, fill=fg_color)
-                y += max(18, line_height + 4)
-                if y >= h - 10:
-                    break
-        else:
-            # Clear the departure area first
-            departure_area_top = y
-            departure_area_bottom = h - 5
-            draw.rectangle([(0, departure_area_top), (w, departure_area_bottom)], fill=bg_color)
+            # Portrait orientation (left/right)
             
-            # Calculate dynamic line spacing based on available space
-            num_to_show = min(len(departures), MAX_DEPARTURES)
-            available_space = h - y - 5  # Leave 5px bottom margin
-            if num_to_show > 0:
-                line_spacing = max(available_space // num_to_show, 15)  # Minimum 15px spacing
-            else:
-                line_spacing = 20  # Default spacing
-            
-            # Fixed positions for alignment
-            # Estimate character width (monospaced font ~6-7px per char)
-            char_width = 7  # Conservative estimate
-            line_num_x = 0
-            dest_x = 5 * char_width  # After 3-character line number + 2 char spaces
-            # Right edge for time/delay (will be calculated per line based on actual delay)
-            time_x = w - 5  # 5px margin from right edge
-            
-            for entry in departures[:MAX_DEPARTURES]:
-                line_num = format_line_number(entry)  # Always 3 chars, aligned
-                dest_raw = entry["to"]
-                dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
-                time_str = entry["stop"]["departure"][11:16]  # HH:MM
+            if use_2row_layout:
+                # Two-row layout (works for both eInk and LCD displays):
+                # Row 1: [LineNumber|leftAligned] [Departure|rightAligned]
+                # Row 2: [Destination|leftAligned] [Delay|rightAligned]
+                y = 14
+                row_height = max(16, line_height + 2)  # Space for two rows per connection
                 
-                # Delay suffix (minutes)
-                delay_str = _format_delay_suffix(entry, for_terminal=False)
-                
-                # Measure time + delay widths
-                try:
-                    bbox = draw.textbbox((0, 0), time_str, font=font_line)
-                    time_width = bbox[2] - bbox[0]
-                except Exception:
-                    time_width = 5 * char_width
-                
-                delay_width = 0
-                if delay_str:
+                for entry in departures[:MAX_DEPARTURES]:
+                    line_num = format_line_number(entry).strip()
+                    time_str = entry["stop"]["departure"][11:16]
+                    delay_str = _format_delay_suffix(entry, for_terminal=False)
+                    dest_raw = entry.get("to", "")
+                    dest = safe_ascii(clean_destination_name(dest_raw))
+                    
+                    # Row 1: LineNumber (left) and Departure time (right)
+                    draw.text((4, y), line_num, font=font_line_bold, fill=fg_color)
+                    
+                    # Measure departure time width for right alignment
                     try:
-                        bbox = draw.textbbox((0, 0), f" {delay_str}", font=font_line_bold)
-                        delay_width = bbox[2] - bbox[0]
+                        bbox = draw.textbbox((0, 0), time_str, font=font_line)
+                        time_w = bbox[2] - bbox[0]
                     except Exception:
-                        delay_width = (1 + len(delay_str)) * char_width
+                        time_w = len(time_str) * 6
+                    draw.text((w - time_w - 4, y), time_str, font=font_line, fill=fg_color)
+                    
+                    y += row_height
+                    
+                    # Row 2: Destination (left) and Delay (right)
+                    # Check if scrolling is enabled (LCD + destination_scroll)
+                    scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
+                    
+                    if scroll_enabled:
+                        # Measure destination text width
+                        try:
+                            bbox = draw.textbbox((0, 0), dest, font=font_line)
+                            dest_w = bbox[2] - bbox[0]
+                        except Exception:
+                            dest_w = len(dest) * 6
+                        
+                        # Measure delay width for available space calculation
+                        delay_w = 0
+                        if delay_str:
+                            try:
+                                bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
+                                delay_w = bbox[2] - bbox[0] + 4  # Add padding
+                            except Exception:
+                                delay_w = (len(delay_str) + 1) * 6
+                        
+                        available_width = w - 8 - delay_w  # Leave space for left margin and delay
+                        
+                        # Only scroll if destination is wider than available space
+                        if dest_w > available_width:
+                            # Get or initialize scroll position for this destination
+                            with _DESTINATION_SCROLL_LOCK:
+                                if dest not in _DESTINATION_SCROLL_POSITIONS:
+                                    # Start with text fully off-screen to the right
+                                    _DESTINATION_SCROLL_POSITIONS[dest] = available_width
+                                else:
+                                    # Move text left (decrease offset)
+                                    scroll_speed = 2  # pixels per frame
+                                    _DESTINATION_SCROLL_POSITIONS[dest] -= scroll_speed
+                                    # Reset when text is fully off-screen to the left
+                                    if _DESTINATION_SCROLL_POSITIONS[dest] < -dest_w:
+                                        _DESTINATION_SCROLL_POSITIONS[dest] = available_width
+                                scroll_x = _DESTINATION_SCROLL_POSITIONS[dest]
+                            
+                            # Draw destination at scroll position
+                            draw.text((4 + scroll_x, y), dest, font=font_line, fill=fg_color)
+                        else:
+                            # Text fits, no scrolling needed
+                            draw.text((4, y), dest, font=font_line, fill=fg_color)
+                    else:
+                        # No scrolling - show full destination
+                        draw.text((4, y), dest, font=font_line, fill=fg_color)
+                    
+                    # Draw delay on the right if present
+                    if delay_str:
+                        try:
+                            bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
+                            delay_w = bbox[2] - bbox[0]
+                        except Exception:
+                            delay_w = len(delay_str) * 6
+                        draw.text((w - delay_w - 4, y), delay_str, font=font_line_bold, fill=fg_color)
+                    
+                    y += row_height + 2  # Extra spacing between connections
+                    if y >= h - 10:
+                        break
+            else:
+                # Original single-row layout (1row mode)
+                y = 14
+                for entry in departures[:MAX_DEPARTURES]:
+                    line_num = format_line_number(entry).strip()
+                    time_str = entry["stop"]["departure"][11:16]
+                    delay_str = _format_delay_suffix(entry, for_terminal=False)
+                    right_text = time_str + (f" {delay_str}" if delay_str else "")
+
+                    # Measure right text for alignment
+                    try:
+                        bbox = draw.textbbox((0, 0), right_text, font=font_line_bold)
+                        right_w = bbox[2] - bbox[0]
+                    except Exception:
+                        right_w = len(right_text) * 6
+
+                    draw.text((4, y), line_num, font=font_line_bold, fill=fg_color)
+                    draw.text((max(40, w - right_w - 4), y), right_text, font=font_line, fill=fg_color)
+                    y += max(18, line_height + 4)
+                    if y >= h - 10:
+                        break
+        else:
+            # Landscape orientation (bottom/top)
+            if use_2row_layout:
+                # Two-row layout for landscape orientation:
+                # Row 1: [LineNumber|left] [Departure|right]
+                # Row 2: [Destination|left] [Delay|right]
+                row_height = max(16, line_height + 2)  # Space for two rows per connection
                 
-                time_delay_width = time_width + delay_width
+                for entry in departures[:MAX_DEPARTURES]:
+                    line_num = format_line_number(entry).strip()
+                    time_str = entry["stop"]["departure"][11:16]
+                    delay_str = _format_delay_suffix(entry, for_terminal=False)
+                    dest_raw = entry.get("to", "")
+                    dest = safe_ascii(clean_destination_name(dest_raw))
+                    
+                    # Row 1: LineNumber (left) and Departure time (right)
+                    draw.text((0, y), line_num, font=font_line_bold, fill=fg_color)
+                    
+                    # Measure departure time width for right alignment
+                    try:
+                        bbox = draw.textbbox((0, 0), time_str, font=font_line)
+                        time_w = bbox[2] - bbox[0]
+                    except Exception:
+                        time_w = len(time_str) * 6
+                    draw.text((w - time_w - 2, y), time_str, font=font_line, fill=fg_color)
+                    
+                    y += row_height
+                    
+                    # Row 2: Destination (left) and Delay (right)
+                    # Check if scrolling is enabled (LCD + destination_scroll)
+                    scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
+                    
+                    if scroll_enabled:
+                        # Measure destination text width
+                        try:
+                            bbox = draw.textbbox((0, 0), dest, font=font_line)
+                            dest_w = bbox[2] - bbox[0]
+                        except Exception:
+                            dest_w = len(dest) * 6
+                        
+                        # Measure delay width for available space calculation
+                        delay_w = 0
+                        if delay_str:
+                            try:
+                                bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
+                                delay_w = bbox[2] - bbox[0] + 4  # Add padding
+                            except Exception:
+                                delay_w = (len(delay_str) + 1) * 6
+                        
+                        available_width = w - 4 - delay_w  # Leave space for left margin and delay
+                        
+                        # Only scroll if destination is wider than available space
+                        if dest_w > available_width:
+                            # Get or initialize scroll position for this destination
+                            with _DESTINATION_SCROLL_LOCK:
+                                if dest not in _DESTINATION_SCROLL_POSITIONS:
+                                    # Start with text fully off-screen to the right
+                                    _DESTINATION_SCROLL_POSITIONS[dest] = available_width
+                                else:
+                                    # Move text left (decrease offset)
+                                    scroll_speed = 2  # pixels per frame
+                                    _DESTINATION_SCROLL_POSITIONS[dest] -= scroll_speed
+                                    # Reset when text is fully off-screen to the left
+                                    if _DESTINATION_SCROLL_POSITIONS[dest] < -dest_w:
+                                        _DESTINATION_SCROLL_POSITIONS[dest] = available_width
+                                scroll_x = _DESTINATION_SCROLL_POSITIONS[dest]
+                            
+                            # Draw destination at scroll position
+                            draw.text((0 + scroll_x, y), dest, font=font_line, fill=fg_color)
+                        else:
+                            # Text fits, no scrolling needed
+                            draw.text((0, y), dest, font=font_line, fill=fg_color)
+                    else:
+                        # No scrolling - show full destination
+                        draw.text((0, y), dest, font=font_line, fill=fg_color)
+                    
+                    # Draw delay on the right if present
+                    if delay_str:
+                        try:
+                            bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
+                            delay_w = bbox[2] - bbox[0]
+                        except Exception:
+                            delay_w = len(delay_str) * 6
+                        draw.text((w - delay_w - 2, y), delay_str, font=font_line_bold, fill=fg_color)
+                    
+                    y += row_height + 2  # Extra spacing between connections
+                    if y >= h - 5:
+                        break
+            else:
+                # Original single-row layout for landscape (1row mode)
+                # Clear the departure area first
+                departure_area_top = y
+                departure_area_bottom = h - 5
+                draw.rectangle([(0, departure_area_top), (w, departure_area_bottom)], fill=bg_color)
                 
-                # Destination truncation
-                dest_max_width = time_x - dest_x - time_delay_width - 5
-                dest_max_chars = max(1, int(dest_max_width / char_width) - 2)
-                if len(dest) > dest_max_chars:
-                    truncate_to = max(1, dest_max_chars - 3)
-                    dest = dest[:truncate_to] + "..."
+                # Calculate dynamic line spacing based on available space
+                num_to_show = min(len(departures), MAX_DEPARTURES)
+                available_space = h - y - 5  # Leave 5px bottom margin
+                if num_to_show > 0:
+                    line_spacing = max(available_space // num_to_show, 15)  # Minimum 15px spacing
+                else:
+                    line_spacing = 20  # Default spacing
                 
-                # Draw: line, destination, time, delay
-                draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
-                draw.text((dest_x, y), dest, font=font_line, fill=fg_color)
+                # Fixed positions for alignment
+                # Estimate character width (monospaced font ~6-7px per char)
+                char_width = 7  # Conservative estimate
+                line_num_x = 0
+                dest_x = 5 * char_width  # After 3-character line number + 2 char spaces
+                # Right edge for time/delay (will be calculated per line based on actual delay)
+                time_x = w - 5  # 5px margin from right edge
                 
-                time_draw_x = time_x - time_delay_width
-                draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
-                if delay_str:
-                    delay_draw_x = time_draw_x + time_width
-                    draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
-                
-                y += line_spacing
+                for entry in departures[:MAX_DEPARTURES]:
+                    line_num = format_line_number(entry)  # Always 3 chars, aligned
+                    dest_raw = entry["to"]
+                    dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
+                    time_str = entry["stop"]["departure"][11:16]  # HH:MM
+                    
+                    # Delay suffix (minutes)
+                    delay_str = _format_delay_suffix(entry, for_terminal=False)
+                    
+                    # Measure time + delay widths
+                    try:
+                        bbox = draw.textbbox((0, 0), time_str, font=font_line)
+                        time_width = bbox[2] - bbox[0]
+                    except Exception:
+                        time_width = 5 * char_width
+                    
+                    delay_width = 0
+                    if delay_str:
+                        try:
+                            bbox = draw.textbbox((0, 0), f" {delay_str}", font=font_line_bold)
+                            delay_width = bbox[2] - bbox[0]
+                        except Exception:
+                            delay_width = (1 + len(delay_str)) * char_width
+                    
+                    time_delay_width = time_width + delay_width
+                    
+                    # Check if scrolling is enabled (LCD only)
+                    scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
+                    
+                    if scroll_enabled:
+                        # Measure destination text width
+                        try:
+                            bbox = draw.textbbox((0, 0), dest, font=font_line)
+                            dest_w = bbox[2] - bbox[0]
+                        except Exception:
+                            dest_w = len(dest) * char_width
+                        
+                        available_width = time_x - dest_x - time_delay_width - 5
+                        
+                        # Only scroll if destination is wider than available space
+                        if dest_w > available_width:
+                            # Get or initialize scroll position for this destination
+                            with _DESTINATION_SCROLL_LOCK:
+                                if dest not in _DESTINATION_SCROLL_POSITIONS:
+                                    # Start with text fully off-screen to the right
+                                    _DESTINATION_SCROLL_POSITIONS[dest] = available_width
+                                else:
+                                    # Move text left (decrease offset)
+                                    scroll_speed = 2  # pixels per frame
+                                    _DESTINATION_SCROLL_POSITIONS[dest] -= scroll_speed
+                                    # Reset when text is fully off-screen to the left
+                                    if _DESTINATION_SCROLL_POSITIONS[dest] < -dest_w:
+                                        _DESTINATION_SCROLL_POSITIONS[dest] = available_width
+                                scroll_x = _DESTINATION_SCROLL_POSITIONS[dest]
+                            
+                            # Draw: line, destination (scrolled), time, delay
+                            draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
+                            draw.text((dest_x + scroll_x, y), dest, font=font_line, fill=fg_color)
+                            
+                            time_draw_x = time_x - time_delay_width
+                            draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
+                            if delay_str:
+                                delay_draw_x = time_draw_x + time_width
+                                draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
+                        else:
+                            # Text fits, no scrolling needed
+                            # Draw: line, destination, time, delay
+                            draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
+                            draw.text((dest_x, y), dest, font=font_line, fill=fg_color)
+                            
+                            time_draw_x = time_x - time_delay_width
+                            draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
+                            if delay_str:
+                                delay_draw_x = time_draw_x + time_width
+                                draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
+                    else:
+                        # No scrolling - use truncation as before
+                        dest_max_width = time_x - dest_x - time_delay_width - 5
+                        dest_max_chars = max(1, int(dest_max_width / char_width) - 2)
+                        if len(dest) > dest_max_chars:
+                            truncate_to = max(1, dest_max_chars - 3)
+                            dest = dest[:truncate_to] + "..."
+                        
+                        # Draw: line, destination, time, delay
+                        draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
+                        draw.text((dest_x, y), dest, font=font_line, fill=fg_color)
+                        
+                        time_draw_x = time_x - time_delay_width
+                        draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
+                        if delay_str:
+                            delay_draw_x = time_draw_x + time_width
+                            draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
+                    
+                    y += line_spacing
             # end not portrait
     else:
         # No departures found
@@ -3837,14 +4170,30 @@ if FLASK_AVAILABLE:
                 return jsonify({"success": False, "error": "config.json module is disabled"}), 403
             new_config = request.get_json()
             if update_config(new_config):
-                # Trigger config reload in main loop
+                # Trigger config reload in main loop (if running in same process)
                 global config_reload_needed
                 config_reload_needed = True
+                # Also create trigger file for inter-process communication
+                _create_config_reload_trigger()
                 return jsonify({"success": True})
             else:
                 return jsonify({"success": False, "error": "Failed to save configuration"}), 500
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 400
+
+    @app.route('/api/reload-config', methods=['POST'])
+    def reload_config():
+        """Trigger a config reload in the main service"""
+        try:
+            # Create trigger file for main service to pick up
+            _create_config_reload_trigger()
+            # Also reload in this process if config is available
+            load_config(force=True)
+            global config_reload_needed
+            config_reload_needed = True
+            return jsonify({"success": True, "message": "Config reload triggered"})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route('/api/web-auth', methods=['GET'])
     def web_auth_status():
@@ -4897,10 +5246,20 @@ def main(test_mode_arg=False, disable_web=False):
                 refresh_triggered = True
             
             # Check for trigger file (alternative method)
-            trigger_file = "/home/pi/ovbuddy/.refresh_trigger"
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            trigger_file = os.path.join(script_dir, ".refresh_trigger")
             if os.path.exists(trigger_file):
                 refresh_triggered = True
                 os.remove(trigger_file)  # Remove trigger file
+            
+            # Check for config reload trigger file
+            config_reload_trigger_file = os.path.join(script_dir, ".config_reload_trigger")
+            if os.path.exists(config_reload_trigger_file):
+                load_config(force=True)
+                config_reload_needed = False  # Clear flag if it was set
+                refresh_triggered = True  # Trigger immediate refresh to show new config
+                os.remove(config_reload_trigger_file)  # Remove trigger file
+                print("Configuration reloaded from trigger file")
             
             # Periodically check for config file changes
             load_config()  # This will only reload if file was modified
@@ -5014,18 +5373,44 @@ def main(test_mode_arg=False, disable_web=False):
             # Update last_was_successful for next iteration
             last_was_successful = is_successful
             
-            # Sleep, but check for trigger more frequently (and keep simulator window responsive)
-            sleep_interval = 1  # Check every second
-            slept = 0
-            while slept < REFRESH_INTERVAL and not refresh_triggered:
-                display.pump()
-                time.sleep(sleep_interval)
-                slept += sleep_interval
-                # Check for trigger file during sleep
-                if os.path.exists(trigger_file):
-                    refresh_triggered = True
-                    os.remove(trigger_file)
-                    break
+            # For LCD displays, use higher refresh rate for smooth scrolling
+            # For eInk displays, only refresh when new data arrives
+            if DISPLAY_TYPE == "lcd" and LCD_REFRESH_RATE > 0:
+                # Calculate frame time for LCD refresh rate
+                frame_time = 1.0 / LCD_REFRESH_RATE
+                slept = 0
+                while slept < REFRESH_INTERVAL and not refresh_triggered:
+                    # Re-render display at LCD refresh rate for smooth scrolling
+                    render_board(departures, display, error_msg,
+                                is_first_successful=False,  # Not first after initial render
+                                last_was_successful=last_was_successful,
+                                test_mode=test_mode_arg)
+                    
+                    # Sleep for one frame
+                    time.sleep(frame_time)
+                    slept += frame_time
+                    
+                    # Check for trigger file during sleep
+                    if os.path.exists(trigger_file):
+                        refresh_triggered = True
+                        os.remove(trigger_file)
+                        break
+                    
+                    # Keep display responsive (for simulator)
+                    display.pump()
+            else:
+                # eInk or low refresh rate: sleep normally, only render when new data arrives
+                sleep_interval = 1  # Check every second
+                slept = 0
+                while slept < REFRESH_INTERVAL and not refresh_triggered:
+                    display.pump()
+                    time.sleep(sleep_interval)
+                    slept += sleep_interval
+                    # Check for trigger file during sleep
+                    if os.path.exists(trigger_file):
+                        refresh_triggered = True
+                        os.remove(trigger_file)
+                        break
     except KeyboardInterrupt:
         print("\nShutting down...")
     except Exception as e:
