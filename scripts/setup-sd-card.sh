@@ -28,7 +28,7 @@ Automation / non-interactive options:
   -h, --help            Show this help
 
 Notes:
-  - If `setup.env` exists, WiFi/hostname/user/password are loaded from it.
+  - If `.env` exists, WiFi/hostname/user/password are loaded from it.
   - The automated CLI method is destructive: it will erase the target disk.
   - Pi Zero W uses 32-bit images, Pi 4 can use 32-bit or 64-bit (defaults to 64-bit for full, 32-bit for lite)
 EOF
@@ -187,20 +187,20 @@ echo "  OS Variant: $([ "$OS_VARIANT" == "lite" ] && echo "Lite" || echo "Full")
 echo "  Architecture: $ARCH"
 echo ""
 
-# Check for setup.env file
+# Check for .env file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SETUP_ENV="$PROJECT_ROOT/setup.env"
+ENV_FILE="$PROJECT_ROOT/.env"
 
-if [[ -f "$SETUP_ENV" ]]; then
-    echo -e "${GREEN}Found setup.env file. Loading configuration...${NC}"
-    source "$SETUP_ENV"
+if [[ -f "$ENV_FILE" ]]; then
+    echo -e "${GREEN}Found .env file. Loading configuration...${NC}"
+    source "$ENV_FILE"
     echo -e "${GREEN}✓ Configuration loaded${NC}"
     echo ""
     
     # Validate required variables
     if [[ -z "$WIFI_SSID" || -z "$WIFI_PASSWORD" || -z "$WIFI_COUNTRY" ]]; then
-        echo -e "${RED}Error: setup.env is missing required WiFi configuration.${NC}"
+        echo -e "${RED}Error: .env is missing required WiFi configuration.${NC}"
         echo "Please ensure WIFI_SSID, WIFI_PASSWORD, and WIFI_COUNTRY are set."
         exit 1
     fi
@@ -210,10 +210,10 @@ if [[ -f "$SETUP_ENV" ]]; then
     USERNAME=${USERNAME:-pi}
     USER_PASSWORD=${USER_PASSWORD:-raspberry}
     
-    # Default to automated CLI when using setup.env (unless overridden)
+    # Default to automated CLI when using .env (unless overridden)
     SETUP_METHOD="${METHOD_ARG:-1}"
     
-    echo -e "${BLUE}Configuration from setup.env:${NC}"
+    echo -e "${BLUE}Configuration from .env:${NC}"
     echo "  WiFi SSID: $WIFI_SSID"
     echo "  WiFi Password: [hidden]"
     echo "  WiFi Country: $WIFI_COUNTRY"
@@ -281,8 +281,8 @@ else
     echo ""
 fi
 
-# Only show confirmation if not already shown for setup.env
-if [[ ! -f "$SETUP_ENV" ]]; then
+# Only show confirmation if not already shown for .env
+if [[ ! -f "$ENV_FILE" ]]; then
     echo -e "${BLUE}Configuration Summary:${NC}"
     echo "  Hostname: $HOSTNAME"
     echo "  Username: $USERNAME"
@@ -1041,10 +1041,10 @@ FIRSTRUN_EOF
     echo "   If .local doesn't work, find the IP:"
     echo "   cd scripts && ./find-pi.sh"
     echo ""
-    echo "4. Update the setup.env file in the OVBuddy project:"
+    echo "4. Update the .env file in the OVBuddy project:"
     echo "   PI_HOST=${HOSTNAME}.local"
     echo "   PI_USER=${USERNAME}"
-    echo "   PI_PASSWORD=[your password from setup.env]"
+    echo "   PI_PASSWORD=[your password from .env]"
     echo ""
     echo "5. Run the deployment script:"
     echo "   cd scripts"

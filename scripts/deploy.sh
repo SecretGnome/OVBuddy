@@ -110,6 +110,22 @@ elif [ -f "../.env" ]; then
     set +a
 fi
 
+# Auto-construct PI_HOST, PI_USER, PI_PASSWORD from HOSTNAME, USERNAME, USER_PASSWORD if not set
+if [ -z "$PI_HOST" ] && [ -n "$HOSTNAME" ]; then
+    PI_HOST="${HOSTNAME}.local"
+    echo -e "${BLUE}Auto-constructed PI_HOST from HOSTNAME: ${PI_HOST}${NC}"
+fi
+
+if [ -z "$PI_USER" ] && [ -n "$USERNAME" ]; then
+    PI_USER="$USERNAME"
+    echo -e "${BLUE}Auto-constructed PI_USER from USERNAME: ${PI_USER}${NC}"
+fi
+
+if [ -z "$PI_PASSWORD" ] && [ -n "$USER_PASSWORD" ]; then
+    PI_PASSWORD="$USER_PASSWORD"
+    echo -e "${BLUE}Auto-constructed PI_PASSWORD from USER_PASSWORD${NC}"
+fi
+
 # Validate required variables
 if [ -z "$PI_HOST" ] || [ -z "$PI_USER" ] || [ -z "$PI_PASSWORD" ]; then
     echo -e "${RED}Error: PI_HOST, PI_USER, and PI_PASSWORD must be set in .env file${NC}"
@@ -117,6 +133,11 @@ if [ -z "$PI_HOST" ] || [ -z "$PI_USER" ] || [ -z "$PI_PASSWORD" ]; then
     echo "  PI_HOST=192.168.1.xxx"
     echo "  PI_USER=pi"
     echo "  PI_PASSWORD=your_password"
+    echo ""
+    echo "Or use the base variables (which will auto-construct the PI_* variables):"
+    echo "  HOSTNAME=ovbuddy"
+    echo "  USERNAME=pi"
+    echo "  USER_PASSWORD=your_password"
     exit 1
 fi
 

@@ -16,11 +16,11 @@ cd scripts
 ./setup-sd-card.sh
 ```
 
-Optional non-interactive config (for the SD setup script only):
+Optional non-interactive config:
 
 ```bash
-cp setup.env.example setup.env
-# edit setup.env
+cp env.example .env
+# edit .env
 ```
 
 ### 2) Boot the Pi
@@ -32,8 +32,6 @@ You should see something like this when public transport lines have been configu
 ![Mocked testing data](assets/test-output.jpg)
 
 ### 3) Deploy OVBuddy
-
-`scripts/deploy.sh` reads **`.env`** (not `setup.env`).
 
 Create `.env` in the project root:
 

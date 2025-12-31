@@ -727,10 +727,12 @@ rsn_pairwise=CCMP
             f.write(hostapd_conf)
         
         # Create dnsmasq configuration
-        dnsmasq_conf = """interface=wlan0
+        import socket
+        hostname = socket.gethostname()
+        dnsmasq_conf = f"""interface=wlan0
 dhcp-range=192.168.4.2,192.168.4.20,255.255.255.0,24h
 domain=local
-address=/ovbuddy.local/192.168.4.1
+address=/{hostname}.local/192.168.4.1
 """
         
         dnsmasq_conf_file = '/tmp/dnsmasq_ovbuddy.conf'

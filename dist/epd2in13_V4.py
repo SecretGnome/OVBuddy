@@ -200,6 +200,21 @@ class EPD:
         
         self.ReadBusy()
         
+        # Clear display RAM to prevent edge artifacts from uninitialized memory
+        # Write white (0xFF) to both old and new data RAM
+        if self.width%8 == 0:
+            linewidth = int(self.width/8)
+        else:
+            linewidth = int(self.width/8) + 1
+        
+        # Clear new data RAM (0x24)
+        self.send_command(0x24)
+        self.send_data2([0xFF] * int(self.height * linewidth))
+        
+        # Clear old data RAM (0x26) to prevent ghosting
+        self.send_command(0x26)
+        self.send_data2([0xFF] * int(self.height * linewidth))
+        
         return 0
 
     '''
@@ -258,6 +273,22 @@ class EPD:
             return [0x00] * (int(self.width/8) * self.height)
 
         buf = bytearray(img.tobytes('raw'))
+        
+        # For displays where width is not a multiple of 8, ensure unused bits
+        # in the last byte of each row are set to 1 (white) to prevent artifacts
+        if self.width % 8 != 0:
+            bytes_per_row = (self.width + 7) // 8  # Round up
+            used_bits = self.width % 8
+            # Create a mask to set unused bits to 1
+            # For example, if width=122, we use 2 bits, so mask = 0b11111100 = 0xFC
+            mask = (0xFF << used_bits) & 0xFF
+            
+            # Apply mask to the last byte of each row
+            for row in range(self.height):
+                last_byte_index = (row + 1) * bytes_per_row - 1
+                if last_byte_index < len(buf):
+                    buf[last_byte_index] |= mask
+        
         return buf
         
     '''

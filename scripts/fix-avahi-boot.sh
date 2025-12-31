@@ -113,8 +113,8 @@ echo ""
 echo -e "${BLUE}To verify the fix:${NC}"
 echo "  1. Reboot the Pi: ssh ${PI_USER}@${PI_SSH_HOST} 'sudo reboot'"
 echo "  2. Wait 60 seconds for it to boot"
-echo "  3. Test mDNS: ping ovbuddy.local"
-echo "  4. Check logs: ssh ${PI_USER}@ovbuddy.local 'sudo journalctl -u avahi-daemon -u fix-bonjour -n 50'"
+echo "  3. Test mDNS: ping ${PI_HOST}"
+echo "  4. Check logs: ssh ${PI_USER}@${PI_HOST} 'sudo journalctl -u avahi-daemon -u fix-bonjour -n 50'"
 echo ""
 
 

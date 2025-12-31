@@ -20,8 +20,9 @@ EOF
 ```
 
 Notes:
-- `PI_HOST` can be an IP (recommended if `.local` isn’t resolving yet).
-- `setup.env` is used by the SD-card script; it is **not** used by `deploy.sh`.
+- `PI_HOST` can be an IP (recommended if `.local` isn't resolving yet).
+- The same `.env` file is used by both the SD-card setup script and deployment script.
+- `PI_HOST`, `PI_USER`, and `PI_PASSWORD` will be auto-constructed from `HOSTNAME`, `USERNAME`, and `USER_PASSWORD` if not explicitly set.
 
 ## Run deployment
 

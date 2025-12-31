@@ -127,6 +127,23 @@ function showMessage(text, type = 'info') {
     }, 5000);
 }
 
+function toggleSection(sectionId) {
+    const section = document.getElementById(sectionId);
+    const header = section.previousElementSibling;
+    
+    if (section.classList.contains('collapsed')) {
+        section.classList.remove('collapsed');
+        header.classList.remove('collapsed');
+    } else {
+        section.classList.add('collapsed');
+        header.classList.add('collapsed');
+    }
+    
+    // Save state to localStorage
+    const isCollapsed = section.classList.contains('collapsed');
+    localStorage.setItem('section-' + sectionId, isCollapsed ? 'collapsed' : 'expanded');
+}
+
 function setLoading(elementId, isLoading) {
     const element = document.getElementById(elementId);
     if (element) {
@@ -1264,6 +1281,19 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Load saved theme
     loadTheme();
+    
+    // Restore section states from localStorage
+    const sections = ['dataLogicSection', 'displayOutputSection', 'systemWifiSection'];
+    sections.forEach(sectionId => {
+        const state = localStorage.getItem('section-' + sectionId);
+        const section = document.getElementById(sectionId);
+        const header = section?.previousElementSibling;
+        
+        if (state === 'collapsed' && section && header) {
+            section.classList.add('collapsed');
+            header.classList.add('collapsed');
+        }
+    });
 
     // Load module settings first, then initialize enabled modules
     (async () => {

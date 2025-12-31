@@ -194,7 +194,7 @@ if run_remote "sudo -n bash /home/pi/ovbuddy/force-ap-mode.sh --help" > /dev/nul
     echo "  ./scripts/force-ap-mode.sh"
     echo ""
     echo "Or via web interface:"
-    echo "  http://ovbuddy.local:8080"
+    echo "  http://${PI_HOST}:8080"
     echo "  Click 'Force AP Mode' button"
 else
     echo -e "${RED}✗ Force AP mode will NOT work${NC}"

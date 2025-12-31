@@ -3,9 +3,22 @@
 
 set -e
 
-# Configuration
-PI_HOST="${PI_HOST:-pi@ovbuddy.local}"
-REMOTE_DIR="/home/pi/ovbuddy"
+# Load configuration from .env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENV_FILE="$PROJECT_ROOT/.env"
+
+if [[ -f "$ENV_FILE" ]]; then
+    source "$ENV_FILE"
+fi
+
+# Set defaults
+HOSTNAME=${HOSTNAME:-pi}
+USERNAME=${USERNAME:-pi}
+
+# Construct PI_HOST with username@hostname.local format
+PI_HOST="${USERNAME}@${HOSTNAME}.local"
+REMOTE_DIR="/home/${USERNAME}/ovbuddy"
 
 echo "Installing requirements on ${PI_HOST}"
 echo "Remote directory: ${REMOTE_DIR}"

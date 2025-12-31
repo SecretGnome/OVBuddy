@@ -96,142 +96,153 @@
             </div>
             <div class="terminal-window-body">
                 <form id="configForm">
-                    <div class="two-column-grid">
-                        <div class="form-group span-2">
-                            <label for="stations">Stations (one per line)</label>
-                            <textarea id="stations" name="stations" placeholder="Zürich Saalsporthalle&#10;Zürich, Saalsporthalle"></textarea>
-                            <div class="help-text">Enter station names, one per line</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="lines">Lines (comma-separated)</label>
-                            <input type="text" id="lines" name="lines" placeholder="S4, T13, T5">
-                            <div class="help-text">Enter line numbers separated by commas</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="refresh_interval">Refresh Interval (seconds)</label>
-                            <input type="number" id="refresh_interval" name="refresh_interval" min="1" step="1">
-                            <div class="help-text">How often to update the display</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="qr_code_display_duration">QR Code Display Duration (seconds)</label>
-                            <input type="number" id="qr_code_display_duration" name="qr_code_display_duration" min="0" step="1">
-                            <div class="help-text">How long to show QR code on startup (0 to skip)</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="max_departures">Max Departures</label>
-                            <input type="number" id="max_departures" name="max_departures" min="1" max="20" step="1">
-                            <div class="help-text">Maximum number of connections to display</div>
-                        </div>
+                    <!-- Data & Logic Section -->
+                    <div class="config-section">
+                        <h3 class="section-header" onclick="toggleSection('dataLogicSection')">
+                            <span class="section-icon">▼</span> Data & Logic
+                        </h3>
+                        <div id="dataLogicSection" class="section-content">
+                            <div class="two-column-grid">
+                                <div class="form-group span-2">
+                                    <label for="stations">Stations <span class="help-icon" title="Enter station names, one per line">ⓘ</span></label>
+                                    <textarea id="stations" name="stations" rows="3" placeholder="Zürich Saalsporthalle&#10;Zürich, Saalsporthalle"></textarea>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="lines">Lines <span class="help-icon" title="Enter line numbers separated by commas">ⓘ</span></label>
+                                    <input type="text" id="lines" name="lines" placeholder="S4, T13, T5">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="max_departures">Max Departures <span class="help-icon" title="Maximum number of connections to display">ⓘ</span></label>
+                                    <input type="number" id="max_departures" name="max_departures" min="1" max="20" step="1">
+                                </div>
 
-                        <div class="form-group span-2">
-                            <label for="destination_prefixes_to_remove">Destination Prefixes to Remove (one per line)</label>
-                            <textarea id="destination_prefixes_to_remove" name="destination_prefixes_to_remove" placeholder="Zurich &#10;Zurich, &#10;Zürich "></textarea>
-                            <div class="help-text">Prefixes to remove from destination names</div>
+                                <div class="form-group span-2">
+                                    <label for="destination_prefixes_to_remove">Destination Prefixes to Remove <span class="help-icon" title="Prefixes to remove from destination names (one per line)">ⓘ</span></label>
+                                    <textarea id="destination_prefixes_to_remove" name="destination_prefixes_to_remove" rows="2" placeholder="Zurich &#10;Zurich, &#10;Zürich "></textarea>
+                                </div>
+                                
+                                <div class="form-group span-2">
+                                    <label for="destination_exceptions">Destination Exceptions <span class="help-icon" title="Destinations that should never have prefixes removed">ⓘ</span></label>
+                                    <input type="text" id="destination_exceptions" name="destination_exceptions" placeholder="HB, Hbf">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="refresh_interval">Refresh Interval (seconds) <span class="help-icon" title="How often to update the display">ⓘ</span></label>
+                                    <input type="number" id="refresh_interval" name="refresh_interval" min="1" step="1">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="qr_code_display_duration">QR Code Duration (seconds) <span class="help-icon" title="How long to show QR code on startup (0 to skip)">ⓘ</span></label>
+                                    <input type="number" id="qr_code_display_duration" name="qr_code_display_duration" min="0" step="1">
+                                </div>
+                            </div>
                         </div>
-                        
-                        <div class="form-group span-2">
-                            <label for="destination_exceptions">Destination Exceptions (comma-separated)</label>
-                            <input type="text" id="destination_exceptions" name="destination_exceptions" placeholder="HB, Hbf">
-                            <div class="help-text">Destinations that should never have prefixes removed</div>
+                    </div>
+
+                    <!-- Display & Output Section -->
+                    <div class="config-section">
+                        <h3 class="section-header" onclick="toggleSection('displayOutputSection')">
+                            <span class="section-icon">▼</span> Display & Output
+                        </h3>
+                        <div id="displayOutputSection" class="section-content">
+                            <div class="two-column-grid">
+                                <div class="form-group">
+                                    <label for="departure_layout">Layout <span class="help-icon" title="1 row: line, destination, time on one line; 2 rows: line and time on first row, destination on second">ⓘ</span></label>
+                                    <select id="departure_layout" name="departure_layout">
+                                        <option value="1row">1 Row (compact)</option>
+                                        <option value="2row">2 Rows (detailed)</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="display_orientation">Orientation <span class="help-icon" title="Choose orientation by where the ports are located">ⓘ</span></label>
+                                    <select id="display_orientation" name="display_orientation">
+                                        <option value="bottom">Bottom (default)</option>
+                                        <option value="top">Top</option>
+                                        <option value="left">Left (90° CW)</option>
+                                        <option value="right">Right (90° CCW)</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="inverted" name="inverted">
+                                        Inverted Colors <span class="help-icon" title="White text on black background">ⓘ</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="use_partial_refresh" name="use_partial_refresh">
+                                        Partial Refresh <span class="help-icon" title="Less flashing, may have ghosting (e-ink only)">ⓘ</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="destination_scroll" name="destination_scroll">
+                                        Scroll Destinations <span class="help-icon" title="Scrolling text like old train displays (LCD only)">ⓘ</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="scroll_speed_factor">Scroll Speed <span class="help-icon" title="0.1-5.0, default 1.0. Higher = faster">ⓘ</span></label>
+                                    <input type="number" id="scroll_speed_factor" name="scroll_speed_factor" min="0.1" max="5.0" step="0.1">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="lcd_refresh_rate">LCD Refresh Rate (FPS) <span class="help-icon" title="1-60, default 30. Higher = smoother but more CPU">ⓘ</span></label>
+                                    <input type="number" id="lcd_refresh_rate" name="lcd_refresh_rate" min="1" max="60" step="1">
+                                </div>
+                            </div>
                         </div>
-                        
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="inverted" name="inverted">
-                                Inverted Display (white text on black background)
-                            </label>
+                    </div>
+
+                    <!-- System & WiFi Section -->
+                    <div class="config-section">
+                        <h3 class="section-header" onclick="toggleSection('systemWifiSection')">
+                            <span class="section-icon">▼</span> System & WiFi
+                        </h3>
+                        <div id="systemWifiSection" class="section-content">
+                            <div class="two-column-grid">
+                                <div class="form-group span-2">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="auto_update" name="auto_update">
+                                        Auto-update on startup <span class="help-icon" title="Automatically install updates when available">ⓘ</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="form-group span-2">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="ap_fallback_enabled" name="ap_fallback_enabled">
+                                        Enable WiFi AP Fallback <span class="help-icon" title="Create own WiFi network if can't connect to configured network">ⓘ</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="ap_ssid">AP Name (SSID) <span class="help-icon" title="Name of WiFi network in access point mode">ⓘ</span></label>
+                                    <input type="text" id="ap_ssid" name="ap_ssid" placeholder="OVBuddy">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="ap_password">AP Password <span class="help-icon" title="Leave empty for open network">ⓘ</span></label>
+                                    <input type="password" id="ap_password" name="ap_password" placeholder="Leave empty for open network">
+                                </div>
+                                
+                                <div class="form-group span-2">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="display_ap_password" name="display_ap_password">
+                                        Display password on screen in AP mode <span class="help-icon" title="Show password on e-ink display (useful for initial setup)">ⓘ</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
-                        
-                        <div class="form-group">
-                            <label for="display_orientation">Display Orientation (Ports)</label>
-                            <select id="display_orientation" name="display_orientation">
-                                <option value="bottom">Bottom (default)</option>
-                                <option value="top">Top</option>
-                                <option value="left">Left (90° CW)</option>
-                                <option value="right">Right (90° CCW)</option>
-                            </select>
-                            <div class="help-text">Choose the device orientation by where the ports are</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="departure_layout">Departure Layout</label>
-                            <select id="departure_layout" name="departure_layout">
-                                <option value="1row">1 Row (single line per connection)</option>
-                                <option value="2row">2 Rows (two lines per connection)</option>
-                            </select>
-                            <div class="help-text">Layout for displaying connections: 1 row shows line, destination, time, and delay on one line; 2 rows shows line and departure time on first row, destination and delay on second row</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="destination_scroll" name="destination_scroll">
-                                Scroll Destination Text (LCD only)
-                            </label>
-                            <div class="help-text">When enabled, destination text scrolls from right to left like old train station displays. Only works on LCD displays (works in both 1-row and 2-row modes).</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="scroll_speed_factor">Scroll Speed Factor</label>
-                            <input type="number" id="scroll_speed_factor" name="scroll_speed_factor" min="0.1" max="5.0" step="0.1">
-                            <div class="help-text">Multiplier for scrolling speed (0.1-5.0, default 1.0). Higher values scroll faster. All destinations scroll at the same speed.</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="lcd_refresh_rate">LCD Refresh Rate (FPS)</label>
-                            <input type="number" id="lcd_refresh_rate" name="lcd_refresh_rate" min="1" max="60" step="1">
-                            <div class="help-text">Display refresh rate for LCD screens in frames per second (1-60, default 30). Higher values enable smoother scrolling but use more CPU. Only applies to LCD displays.</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="use_partial_refresh" name="use_partial_refresh">
-                                Use Partial Refresh (less flashing, may have ghosting)
-                            </label>
-                        </div>
-                        
-                        <div class="form-group span-2">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="auto_update" name="auto_update">
-                                Auto-update on startup (automatically install updates when available)
-                            </label>
-                            <div class="help-text">When enabled, the system will automatically update and restart when a new version is available</div>
-                        </div>
-                        
-                        <div class="form-group span-2">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="ap_fallback_enabled" name="ap_fallback_enabled">
-                                Enable WiFi Access Point Fallback
-                            </label>
-                            <div class="help-text">When enabled, the device will create its own WiFi network if it can't connect to a configured network</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="ap_ssid">Access Point Name (SSID)</label>
-                            <input type="text" id="ap_ssid" name="ap_ssid" placeholder="OVBuddy">
-                            <div class="help-text">The name of the WiFi network when in access point mode</div>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="ap_password">Access Point Password</label>
-                            <input type="password" id="ap_password" name="ap_password" placeholder="Leave empty for open network">
-                            <div class="help-text">Password for the access point (leave empty for no password)</div>
-                        </div>
-                        
-                        <div class="form-group span-2">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="display_ap_password" name="display_ap_password">
-                                Display password on screen when in AP mode
-                            </label>
-                            <div class="help-text">When enabled, the password will be shown on the e-ink display (useful for initial setup)</div>
-                        </div>
-                        
-                        <div class="form-group span-2">
-                            <button type="submit">Save Configuration</button>
-                        </div>
+                    </div>
+                    
+                    <div class="form-group" style="margin-top: 20px;">
+                        <button type="submit">Save Configuration</button>
                     </div>
                 </form>
             </div>

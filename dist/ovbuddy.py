@@ -495,25 +495,12 @@ class HardwareLCDBackend(DisplayBackend):
                     image = image.convert('RGB')
             
             # Apply inversion if needed (invert RGB values)
+            # Note: For LCD displays with colors, we skip inversion to preserve line colors
+            # Inversion is primarily for eInk displays to improve readability
             if inverted:
-                # Invert RGB image: (r, g, b) -> (255-r, 255-g, 255-b)
-                try:
-                    # Try numpy first (fastest)
-                    img_array = np.array(image)
-                    inverted_array = 255 - img_array
-                    image = Image.fromarray(inverted_array.astype('uint8'), 'RGB')
-                except (ImportError, AttributeError, Exception):
-                    # Fallback: use PIL's ImageOps if numpy not available
-                    try:
-                        from PIL import ImageOps
-                        image = ImageOps.invert(image)
-                    except Exception:
-                        # Last resort: manual pixel inversion (slower but always works)
-                        pixels = image.load()
-                        for i in range(image.width):
-                            for j in range(image.height):
-                                r, g, b = pixels[i, j]
-                                pixels[i, j] = (255 - r, 255 - g, 255 - b)
+                # Skip inversion for color LCD displays to preserve line colors
+                # The colored rectangles would be inverted (blue -> orange) which is not desired
+                pass
             
             # Display the image (luma.lcd device.display() expects RGB PIL Image)
             # The offsets in device initialization should prevent edge artifacts
@@ -619,7 +606,7 @@ def create_display_backend():
             # Note: h_offset and v_offset help align the visible area and prevent edge artifacts
             # Common values for ST7735R: h_offset=2, v_offset=3
             serial = spi_serial(port=0, device=0, gpio_DC=25, gpio_RST=27)
-            device = st7735(serial, width=128, height=128, rotate=0, h_offset=2, v_offset=3, bgr=False)
+            device = st7735(serial, width=128, height=128, rotate=0, h_offset=2, v_offset=3, bgr=True)
             return HardwareLCDBackend(device)
         except Exception as e:
             print(f"Warning: failed to initialize LCD display ({e}); using terminal backend.")
@@ -761,9 +748,9 @@ DEFAULT_CONFIG = {
     "flip_display": False,
     "use_partial_refresh": False,
     # Departure layout: "1row" (default, single row per connection) or "2row" (two rows per connection)
-    "departure_layout": "1row",
+    "departure_layout": "2row",
     # Destination scroll: enable scrolling destination text from right to left (LCD only, works in both 1-row and 2-row modes)
-    "destination_scroll": False,
+    "destination_scroll": True,
     # Scroll speed factor: multiplier for scrolling speed (0.1-5.0, default 1.0)
     # Higher values scroll faster. All destinations scroll at the same speed.
     "scroll_speed_factor": 1.0,
@@ -936,7 +923,7 @@ def _new_oriented_image(bg_color: int, width=None, height=None):
     - left/right: portrait canvas (height x width) which will be rotated to panel coords
     
     Args:
-        bg_color: Background color (0 or 255)
+        bg_color: Background color (0 or 255 for monochrome, or RGB tuple for color)
         width: Display width (defaults to DISPLAY_WIDTH for backward compatibility)
         height: Display height (defaults to DISPLAY_HEIGHT for backward compatibility)
     """
@@ -945,9 +932,18 @@ def _new_oriented_image(bg_color: int, width=None, height=None):
     if height is None:
         height = DISPLAY_HEIGHT
     
+    # Use RGB mode for LCD displays to support colors, monochrome for eInk
+    if DISPLAY_TYPE == "lcd":
+        # Convert monochrome color to RGB if needed
+        if isinstance(bg_color, int):
+            bg_color = (bg_color, bg_color, bg_color) if bg_color in (0, 255) else (255, 255, 255)
+        mode = 'RGB'
+    else:
+        mode = '1'
+    
     if _is_portrait_orientation():
-        return Image.new('1', (height, width), bg_color)
-    return Image.new('1', (width, height), bg_color)
+        return Image.new(mode, (height, width), bg_color)
+    return Image.new(mode, (width, height), bg_color)
 
 def _apply_display_orientation(image):
     """Map a viewer-oriented image to the panel buffer orientation (always DISPLAY_WIDTH x DISPLAY_HEIGHT)."""
@@ -2134,28 +2130,111 @@ def _format_delay_suffix(entry, for_terminal: bool = False) -> str:
         return f" >{delay_minutes}min"
     return f">{delay_minutes}min"
 
+# Cache for line colors mapping
+_LINE_COLORS_CACHE = None
+_LINE_COLORS_CACHE_MTIME = None
+
+def _load_line_colors():
+    """Load line colors from line_colors.json file (cached).
+    
+    Returns dict mapping line numbers (as strings) to hex color strings, or None if file not found.
+    """
+    global _LINE_COLORS_CACHE, _LINE_COLORS_CACHE_MTIME
+    
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    colors_file = os.path.join(script_dir, "line_colors.json")
+    
+    # Check if file exists
+    if not os.path.exists(colors_file):
+        return None
+    
+    try:
+        # Check if cache is still valid (file hasn't been modified)
+        current_mtime = os.path.getmtime(colors_file)
+        if _LINE_COLORS_CACHE is not None and _LINE_COLORS_CACHE_MTIME == current_mtime:
+            return _LINE_COLORS_CACHE
+        
+        # Load the file
+        with open(colors_file, 'r') as f:
+            _LINE_COLORS_CACHE = json.load(f)
+            _LINE_COLORS_CACHE_MTIME = current_mtime
+            return _LINE_COLORS_CACHE
+    except Exception as e:
+        print(f"Warning: Could not load line_colors.json: {e}")
+        return None
+
+def _extract_line_number_for_color(entry):
+    """Extract the numeric line number from an entry for color lookup.
+    
+    Returns the line number as a string (e.g., "14" for "T14" or "14"),
+    or None if not extractable.
+    """
+    line_num = str(entry.get("number", "")).strip()
+    if not line_num:
+        return None
+    
+    line_upper = line_num.upper()
+    category = str(entry.get("category", "")).upper()
+    
+    # Extract numeric part (similar to format_line_number logic)
+    if line_upper.startswith("T"):
+        # Remove T prefix for trams
+        numeric_part = line_upper[1:].strip()
+    elif line_upper.startswith("S"):
+        # S-Bahn lines - we might want colors for these too
+        numeric_part = line_upper[1:].strip()
+    elif line_upper.startswith("B"):
+        # Bus lines
+        numeric_part = line_upper[1:].strip()
+    else:
+        # No prefix, use the whole thing
+        numeric_part = line_upper.strip()
+    
+    # Only return if it looks like a number (for tram/bus lines)
+    if numeric_part and numeric_part.isdigit():
+        return numeric_part
+    
+    # Also check if category indicates it's a tram and we can use the number directly
+    if (category == "T" or "TRAM" in category) and line_upper.isdigit():
+        return line_upper
+    
+    return None
+
 def _extract_line_color(entry):
     """Extract line color from API entry.
     
-    Checks multiple possible fields:
-    - entry.get('color')
-    - entry.get('fgColor')
-    - entry.get('operator', {}).get('color')
-    - entry.get('operator', {}).get('fgColor')
+    Checks multiple possible fields from API first, then falls back to line_colors.json.
     
     Returns RGB tuple (r, g, b) or None if not found.
     """
-    # Try direct color fields
+    # Try direct color fields from API
     color = entry.get('color') or entry.get('fgColor')
     if color:
-        return _hex_to_rgb(color)
+        rgb = _hex_to_rgb(color)
+        if rgb:
+            return rgb
     
-    # Try operator color fields
+    # Try operator color fields from API
     operator = entry.get('operator', {})
     if isinstance(operator, dict):
         color = operator.get('color') or operator.get('fgColor')
         if color:
-            return _hex_to_rgb(color)
+            rgb = _hex_to_rgb(color)
+            if rgb:
+                return rgb
+    
+    # Fallback to manual mapping from line_colors.json (for LCD displays)
+    # Only use this fallback for LCD displays since eInk is monochrome
+    if DISPLAY_TYPE == "lcd":
+        line_colors = _load_line_colors()
+        if line_colors:
+            line_number = _extract_line_number_for_color(entry)
+            if line_number and line_number in line_colors:
+                color_hex = line_colors[line_number]
+                rgb = _hex_to_rgb(color_hex)
+                if rgb:
+                    return rgb
     
     return None
 
@@ -2395,7 +2474,9 @@ def render_qr_code(display=None, test_mode=False):
 
     # Use AP IP when in AP mode; otherwise use Bonjour hostname.
     # (In AP mode, mDNS can be unreliable/unsupported on some clients.)
-    url = f"http://{ap_info['ip']}:8080" if ap_active else "http://ovbuddy.local:8080"
+    import socket
+    hostname = socket.gethostname()
+    url = f"http://{ap_info['ip']}:8080" if ap_active else f"http://{hostname}.local:8080"
     
     if not getattr(display, "supports_pil", False):
         lines = ["Web Config", "", f"URL: {safe_ascii(url)}"]
@@ -2471,7 +2552,7 @@ def render_qr_code(display=None, test_mode=False):
             # fall through to normal QR renderer
     
     try:
-        # Generate QR code - use smaller version to fit on right side
+        # Generate QR code - use optimal version for centered square layout
         qr = pyqrcode.create(url, error='L', version=2)
 
         # Render QR code directly into a PIL image (avoids optional `pypng` dependency).
@@ -2509,153 +2590,251 @@ def render_qr_code(display=None, test_mode=False):
         draw = ImageDraw.Draw(image)
         w, h = image.size
         
-        # Split display: left side for instructions, right side for QR code
-        # For LCD (128x128), use more compact layout; for eInk (250x122), use original layout
-        if display_width <= 128:
-            # LCD: compact layout - QR code on right, text on left
-            text_area_width = max(60, w // 2)  # At least half for text
-            qr_area_width = w - text_area_width - 3  # 3px gap
-        else:
-            # eInk: original layout
-            text_area_width = 155
-            qr_area_width = w - text_area_width - 5  # 5px gap
+        font = ImageFont.load_default()
+        line_height = 12
         
-        # Resize QR code to fit in right area
-        qr_width, qr_height = qr_image.size
-        max_qr_size = min(qr_area_width, h - 10)  # Leave some margin
-        
-        if qr_width > max_qr_size or qr_height > max_qr_size:
-            # Scale down QR code to fit
-            scale_factor = max_qr_size / max(qr_width, qr_height)
-            new_width = int(qr_width * scale_factor)
-            new_height = int(qr_height * scale_factor)
-            qr_image = qr_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            qr_width, qr_height = new_width, new_height
-        
-        # Position QR code on the right side (centered vertically)
-        qr_x = text_area_width + 5  # Start after text area + gap
-        qr_y = (h - qr_height) // 2
-        
-        # Paste QR code onto display
-        if INVERTED:
-            # Invert QR code for inverted display
-            qr_image = Image.eval(qr_image, lambda x: 255 - x)
-        image.paste(qr_image, (qr_x, qr_y))
-        
-        # Draw instructions on the left side
-        try:
-            font = ImageFont.load_default()
-            
-            # Get WiFi status (or AP info)
-            ssid = ""
-            ip = get_local_ip()
+        # Get WiFi status (or AP info)
+        ssid = ""
+        ip = get_local_ip()
 
-            if ap_active and ap_info:
-                ssid = safe_ascii(ap_info["ssid"])
-                ip = ap_info["ip"] or "192.168.4.1"
-            else:
-                wifi_status = get_wifi_status()
-                if wifi_status.get("connected") and wifi_status.get("ssid"):
-                    ssid = safe_ascii(wifi_status["ssid"])
-                    # Truncate SSID if too long
-                    if len(ssid) > 20:
-                        ssid = ssid[:17] + "..."
-                    # Use IP from WiFi status if available, otherwise fallback to get_local_ip()
-                    if wifi_status.get("ip"):
-                        ip = wifi_status["ip"]
+        if ap_active and ap_info:
+            ssid = safe_ascii(ap_info["ssid"])
+            ip = ap_info["ip"] or "192.168.4.1"
+        else:
+            wifi_status = get_wifi_status()
+            if wifi_status.get("connected") and wifi_status.get("ssid"):
+                ssid = safe_ascii(wifi_status["ssid"])
+                # Truncate SSID if too long
+                if len(ssid) > 20:
+                    ssid = ssid[:17] + "..."
+                # Use IP from WiFi status if available, otherwise fallback to get_local_ip()
+                if wifi_status.get("ip"):
+                    ip = wifi_status["ip"]
+        
+        # Choose layout based on display type
+        if DISPLAY_TYPE == "lcd" or display_width <= 128:
+            # CENTERED VERTICAL LAYOUT for LCD/square displays: QR code at top, text below, all centered
             
-            # Instruction text lines
-            instructions = [
-                "Scan QR code to",
-                "access web config"
-            ]
+            # Build text lines (will be displayed below QR code)
+            text_lines = []
             
-            # Calculate starting Y position to center text vertically
-            line_height = 12
-            total_text_height = len(instructions) * line_height
-            # Add space for SSID and IP (empty line before SSID, SSID, empty line, IP = 4 lines)
-            info_spacing = 6  # Space between sections
-            info_height = line_height * 4  # Empty line, SSID, empty line, and IP (4 lines)
-            total_height_with_info = total_text_height + info_spacing + info_height
-            start_y = (h - total_height_with_info) // 2
-            
-            # Draw each line of instructions
-            x = 5  # Left margin
-            for i, line in enumerate(instructions):
-                y = start_y + (i * line_height)
-                draw.text((x, y), line, font=font, fill=fg_color)
-            
-            # Add SSID and IP address below instructions (with empty line before SSID)
-            info_y = start_y + total_text_height + info_spacing + line_height  # Add line_height for empty line before SSID
-            
-            # Draw SSID
             if ssid:
-                ssid_text = ssid
+                text_lines.append(ssid)
             else:
-                ssid_text = "Not connected"
+                text_lines.append("Not connected")
             
-            # Truncate SSID text if too long
-            try:
-                bbox = draw.textbbox((0, 0), ssid_text, font=font)
-                text_width = bbox[2] - bbox[0]
-            except:
-                text_width = len(ssid_text) * 6
+            # Add IP address
+            ip_text = f"{ip}:8080"
+            text_lines.append(ip_text)
             
-            if text_width > text_area_width - 10:
-                # Truncate SSID text
-                max_chars = (text_area_width - 10) // 6
-                if len(ssid_text) > max_chars:
-                    ssid_text = ssid_text[:max_chars-3] + "..."
-            
-            draw.text((x, info_y), ssid_text, font=font, fill=fg_color)
-            
-            # Optional: show AP password on QR screen (only in AP mode)
+            # Optional: show AP password (only in AP mode)
             if ap_active and ap_info and ap_info.get("password"):
                 pwd_value = ap_info["password"] if ap_info.get("display_password") else "********"
-                pwd_text = safe_ascii(pwd_value)
-                # Truncate if too long for the text area
-                try:
-                    bbox = draw.textbbox((0, 0), pwd_text, font=font)
-                    pwd_width = bbox[2] - bbox[0]
-                except Exception:
-                    pwd_width = len(pwd_text) * 6
-                if pwd_width > text_area_width - 10:
-                    max_chars = (text_area_width - 10) // 6
-                    if max_chars > 3 and len(pwd_text) > max_chars:
-                        pwd_text = pwd_text[:max_chars-3] + "..."
-                draw.text((x, info_y + line_height), pwd_text, font=font, fill=fg_color)
-
-            # Draw IP address (with empty line between SSID and IP)
-            # If we printed password, push IP down one more line.
-            ip_y = info_y + line_height * (3 if (ap_active and ap_info and ap_info.get("password")) else 2)
+                text_lines.append(safe_ascii(pwd_value))
             
-            # Draw IP value aligned with SSID value (no label)
-            ip_value_x = x
+            # Calculate total height needed for QR + text
+            qr_width, qr_height = qr_image.size
+            max_qr_size = min(w - 20, 90)  # Max QR size with margins
             
-            # Try to fit IP with port on one line
-            ip_text = f"{ip}:8080"
+            # Scale QR code if needed
+            if qr_width > max_qr_size or qr_height > max_qr_size:
+                scale_factor = max_qr_size / max(qr_width, qr_height)
+                new_width = int(qr_width * scale_factor)
+                new_height = int(qr_height * scale_factor)
+                qr_image = qr_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                qr_width, qr_height = new_width, new_height
+            
+            # Calculate text block height
+            text_block_height = len(text_lines) * line_height
+            gap_between_qr_and_text = 8
+            
+            # Total content height
+            total_content_height = qr_height + gap_between_qr_and_text + text_block_height
+            
+            # Center everything vertically
+            start_y = (h - total_content_height) // 2
+            
+            # Position and paste QR code (centered horizontally)
+            qr_x = (w - qr_width) // 2
+            qr_y = start_y
+            
+            if INVERTED:
+                # Invert QR code for inverted display
+                qr_image = Image.eval(qr_image, lambda x: 255 - x)
+            
+            # Convert QR code to match display image mode (important for LCD RGB mode)
+            if image.mode == 'RGB' and qr_image.mode == '1':
+                qr_image = qr_image.convert('RGB')
+            
+            image.paste(qr_image, (qr_x, qr_y))
+            
+            # Draw text lines below QR code (all centered)
             try:
-                bbox = draw.textbbox((0, 0), ip_text, font=font)
-                text_width = bbox[2] - bbox[0]
-            except:
-                text_width = len(ip_text) * 6
+                text_y = qr_y + qr_height + gap_between_qr_and_text
+                
+                for line in text_lines:
+                    if not line:  # Empty line
+                        text_y += line_height
+                        continue
+                    
+                    # Center each line horizontally
+                    try:
+                        bbox = draw.textbbox((0, 0), line, font=font)
+                        text_width = bbox[2] - bbox[0]
+                    except:
+                        text_width = len(line) * 6
+                    
+                    # Truncate if too wide
+                    if text_width > w - 10:
+                        max_chars = (w - 10) // 6
+                        if len(line) > max_chars:
+                            line = line[:max_chars-3] + "..."
+                        try:
+                            bbox = draw.textbbox((0, 0), line, font=font)
+                            text_width = bbox[2] - bbox[0]
+                        except:
+                            text_width = len(line) * 6
+                    
+                    text_x = (w - text_width) // 2
+                    draw.text((text_x, text_y), line, font=font, fill=fg_color)
+                    text_y += line_height
+                
+            except Exception as e:
+                print(f"Error drawing text: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        else:
+            # SIDE-BY-SIDE LAYOUT for eInk displays: text on left, QR code on right
+            text_area_width = 155
+            qr_area_width = w - text_area_width - 5  # 5px gap
             
-            if text_width <= text_area_width - 10 - (ip_value_x - x):
-                draw.text((ip_value_x, ip_y), ip_text, font=font, fill=fg_color)
-            else:
-                # Split IP if too long (try to keep port on same line as last part)
-                parts = ip.split('.')
-                if len(parts) == 4:
-                    # Try to fit first two parts on first line
-                    first_line = '.'.join(parts[:2])
-                    second_line = '.'.join(parts[2:]) + ':8080'
-                    draw.text((ip_value_x, ip_y), first_line, font=font, fill=fg_color)
-                    draw.text((ip_value_x, ip_y + line_height), second_line, font=font, fill=fg_color)
+            # Resize QR code to fit in right area
+            qr_width, qr_height = qr_image.size
+            max_qr_size = min(qr_area_width, h - 10)  # Leave some margin
+            
+            if qr_width > max_qr_size or qr_height > max_qr_size:
+                # Scale down QR code to fit
+                scale_factor = max_qr_size / max(qr_width, qr_height)
+                new_width = int(qr_width * scale_factor)
+                new_height = int(qr_height * scale_factor)
+                qr_image = qr_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                qr_width, qr_height = new_width, new_height
+            
+            # Position QR code on the right side (centered vertically)
+            qr_x = text_area_width + 5  # Start after text area + gap
+            qr_y = (h - qr_height) // 2
+            
+            # Paste QR code onto display
+            if INVERTED:
+                # Invert QR code for inverted display
+                qr_image = Image.eval(qr_image, lambda x: 255 - x)
+            
+            # Convert QR code to match display image mode (important for LCD RGB mode)
+            if image.mode == 'RGB' and qr_image.mode == '1':
+                qr_image = qr_image.convert('RGB')
+            
+            image.paste(qr_image, (qr_x, qr_y))
+            
+            # Draw instructions on the left side
+            try:
+                # Instruction text lines
+                instructions = [
+                    "Scan QR code to",
+                    "access web config"
+                ]
+                
+                # Calculate starting Y position to center text vertically
+                total_text_height = len(instructions) * line_height
+                # Add space for SSID and IP (empty line before SSID, SSID, empty line, IP = 4 lines)
+                info_spacing = 6  # Space between sections
+                info_height = line_height * 4  # Empty line, SSID, empty line, and IP (4 lines)
+                total_height_with_info = total_text_height + info_spacing + info_height
+                start_y = (h - total_height_with_info) // 2
+                
+                # Draw each line of instructions
+                x = 5  # Left margin
+                for i, line in enumerate(instructions):
+                    y = start_y + (i * line_height)
+                    draw.text((x, y), line, font=font, fill=fg_color)
+                
+                # Add SSID and IP address below instructions (with empty line before SSID)
+                info_y = start_y + total_text_height + info_spacing + line_height  # Add line_height for empty line before SSID
+                
+                # Draw SSID
+                if ssid:
+                    ssid_text = ssid
                 else:
-                    # Fallback: just show IP:port and let it wrap if needed
+                    ssid_text = "Not connected"
+                
+                # Truncate SSID text if too long
+                try:
+                    bbox = draw.textbbox((0, 0), ssid_text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                except:
+                    text_width = len(ssid_text) * 6
+                
+                if text_width > text_area_width - 10:
+                    # Truncate SSID text
+                    max_chars = (text_area_width - 10) // 6
+                    if len(ssid_text) > max_chars:
+                        ssid_text = ssid_text[:max_chars-3] + "..."
+                
+                draw.text((x, info_y), ssid_text, font=font, fill=fg_color)
+                
+                # Optional: show AP password on QR screen (only in AP mode)
+                if ap_active and ap_info and ap_info.get("password"):
+                    pwd_value = ap_info["password"] if ap_info.get("display_password") else "********"
+                    pwd_text = safe_ascii(pwd_value)
+                    # Truncate if too long for the text area
+                    try:
+                        bbox = draw.textbbox((0, 0), pwd_text, font=font)
+                        pwd_width = bbox[2] - bbox[0]
+                    except Exception:
+                        pwd_width = len(pwd_text) * 6
+                    if pwd_width > text_area_width - 10:
+                        max_chars = (text_area_width - 10) // 6
+                        if max_chars > 3 and len(pwd_text) > max_chars:
+                            pwd_text = pwd_text[:max_chars-3] + "..."
+                    draw.text((x, info_y + line_height), pwd_text, font=font, fill=fg_color)
+
+                # Draw IP address (with empty line between SSID and IP)
+                # If we printed password, push IP down one more line.
+                ip_y = info_y + line_height * (3 if (ap_active and ap_info and ap_info.get("password")) else 2)
+                
+                # Draw IP value aligned with SSID value (no label)
+                ip_value_x = x
+                
+                # Try to fit IP with port on one line
+                ip_text = f"{ip}:8080"
+                try:
+                    bbox = draw.textbbox((0, 0), ip_text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                except:
+                    text_width = len(ip_text) * 6
+                
+                if text_width <= text_area_width - 10 - (ip_value_x - x):
                     draw.text((ip_value_x, ip_y), ip_text, font=font, fill=fg_color)
-            
-            # Draw version number in bottom-right corner
+                else:
+                    # Split IP if too long (try to keep port on same line as last part)
+                    parts = ip.split('.')
+                    if len(parts) == 4:
+                        # Try to fit first two parts on first line
+                        first_line = '.'.join(parts[:2])
+                        second_line = '.'.join(parts[2:]) + ':8080'
+                        draw.text((ip_value_x, ip_y), first_line, font=font, fill=fg_color)
+                        draw.text((ip_value_x, ip_y + line_height), second_line, font=font, fill=fg_color)
+                    else:
+                        # Fallback: just show IP:port and let it wrap if needed
+                        draw.text((ip_value_x, ip_y), ip_text, font=font, fill=fg_color)
+                
+            except Exception as e:
+                print(f"Error drawing instructions: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Draw version number (top-right for LCD, bottom-right for eInk)
+        try:
             version_text = f"v{VERSION}"
             try:
                 bbox = draw.textbbox((0, 0), version_text, font=font)
@@ -2665,15 +2844,17 @@ def render_qr_code(display=None, test_mode=False):
                 version_width = len(version_text) * 6
                 version_height = 8
             
-            # Position in bottom-right corner with small margin
+            # Position based on display type
             version_x = w - version_width - 3
-            version_y = h - version_height - 3
+            if DISPLAY_TYPE == "lcd" or display_width <= 128:
+                # Top-right corner for LCD displays
+                version_y = 3
+            else:
+                # Bottom-right corner for eInk displays
+                version_y = h - version_height - 3
             draw.text((version_x, version_y), version_text, font=font, fill=fg_color)
-            
         except Exception as e:
-            print(f"Error drawing instructions: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error drawing version: {e}")
         
         image = _apply_display_orientation(image)
         display.show_pil(image)
@@ -2799,7 +2980,18 @@ def render_ap_info(ssid, password=None, display_password=False, display=None, te
         display_height = getattr(display, 'height', DISPLAY_HEIGHT)
         
         # Create display image with display-specific dimensions
-        image = Image.new('1', (display_width, display_height), bg_color)
+        # Use RGB mode for LCD displays to support colors, monochrome for eInk
+        if DISPLAY_TYPE == "lcd":
+            image_mode = 'RGB'
+            bg_color_rgb = (255, 255, 255) if not INVERTED else (0, 0, 0)
+            fg_color_rgb = (0, 0, 0) if not INVERTED else (255, 255, 255)
+            image = Image.new(image_mode, (display_width, display_height), bg_color_rgb)
+            # Override bg_color and fg_color for RGB mode
+            bg_color = bg_color_rgb
+            fg_color = fg_color_rgb
+        else:
+            image_mode = '1'
+            image = Image.new(image_mode, (display_width, display_height), bg_color)
         draw = ImageDraw.Draw(image)
         w, h = image.size
         
@@ -3176,6 +3368,11 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
     draw = ImageDraw.Draw(image)
     w, h = image.size
     
+    # For RGB mode (LCD), convert colors to RGB tuples
+    if image.mode == 'RGB':
+        bg_color = (bg_color, bg_color, bg_color) if isinstance(bg_color, int) else bg_color
+        fg_color = (fg_color, fg_color, fg_color) if isinstance(fg_color, int) else fg_color
+    
     # Ensure we're drawing on a fresh canvas by explicitly filling background
     draw.rectangle([(0, 0), (w, h)], fill=bg_color)
     
@@ -3308,6 +3505,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         # If font loading fails, use default
         font_line = ImageFont.load_default()
         font_line_bold = font_line
+        font_delay = font_line  # Also set delay font to default
     
     # Draw header (skip station header in left/right orientation or when using LCD)
     if not _is_portrait_orientation() and DISPLAY_TYPE != "lcd":
@@ -3325,8 +3523,6 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
     time_x = w - time_width - 2  # 2px margin from right edge
     draw.text((time_x, -1), current_time, font=font_header, fill=fg_color)
     
-    draw.line((0, 10, w, 10), fill=fg_color)
-
     # Draw content
     y = 12
     if error_msg:
@@ -3431,7 +3627,36 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         text_color = fg_color
                     
                     # Row 1: LineNumber (left) and Departure time + Delay (right)
-                    draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
+                    # For LCD displays, draw line number with its color if available
+                    if DISPLAY_TYPE == "lcd" and line_color_rgb:
+                        print(f"Debug DRAW: Drawing rectangle for line {line_num} with color {line_color_rgb}, image mode: {image.mode}")
+                        # Draw line number with colored background
+                        try:
+                            # Get the bounding box of the text at its actual position
+                            bbox = draw.textbbox((4, y), line_num, font=font_line_bold)
+                            # Add small padding around the text
+                            rect_x1 = bbox[0] - 2
+                            rect_y1 = bbox[1] - 1
+                            rect_x2 = bbox[2] + 2
+                            rect_y2 = bbox[3] + 1
+                        except Exception:
+                            # Fallback if textbbox fails
+                            rect_x1 = 2
+                            rect_y1 = y - 1
+                            rect_x2 = 4 + len(line_num) * 8 + 2
+                            rect_y2 = y + row_height + 1
+                        
+                        # Draw colored rectangle behind line number
+                        draw.rectangle([(rect_x1, rect_y1), (rect_x2, rect_y2)], fill=line_color_rgb)
+                        print(f"Debug DRAW: Rectangle drawn at ({rect_x1}, {rect_y1}) to ({rect_x2}, {rect_y2})")
+                        
+                        # Determine text color based on background luminance
+                        luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                        line_num_text_color = (255, 255, 255) if luminance < 128 else (0, 0, 0)
+                        draw.text((4, y), line_num, font=font_line_bold, fill=line_num_text_color)
+                    else:
+                        # eInk or no color: use default text color
+                        draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
                     
                     # Build right side: time + delay (if present)
                     right_text = time_str
@@ -3500,13 +3725,6 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         # No scrolling - show full destination
                         draw.text((4, y), dest, font=font_line, fill=text_color)
                     
-                    # Draw separator line after the second row (only if not the last connection)
-                    if idx < len(displayed_departures) - 1:
-                        separator_y = y + row_height
-                        # Use a subtle separator color (lighter/darker than text)
-                        separator_color = text_color if image.mode == 'RGB' else fg_color
-                        draw.line([(0, separator_y), (w, separator_y)], fill=separator_color, width=1)
-                    
                     y += row_height + 2  # Extra spacing between connections
                     if y >= h - 10:
                         break
@@ -3548,7 +3766,27 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     except Exception:
                         right_w = len(right_text) * 6
 
-                    draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
+                    # For LCD displays, draw line number with its color if available
+                    if DISPLAY_TYPE == "lcd" and line_color_rgb:
+                        # Draw line number with colored background
+                        try:
+                            bbox = draw.textbbox((4, y), line_num, font=font_line_bold)
+                            line_num_w = bbox[2] - bbox[0]
+                            line_num_h = bbox[3] - bbox[1]
+                        except Exception:
+                            line_num_w = len(line_num) * 8
+                            line_num_h = row_height_1row
+                        
+                        # Draw colored rectangle behind line number
+                        draw.rectangle([(2, y - 1), (6 + line_num_w, y + line_num_h + 1)], fill=line_color_rgb)
+                        
+                        # Determine text color based on background luminance
+                        luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                        line_num_text_color = (255, 255, 255) if luminance < 128 else (0, 0, 0)
+                        draw.text((4, y), line_num, font=font_line_bold, fill=line_num_text_color)
+                    else:
+                        # eInk or no color: use default text color
+                        draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
                     draw.text((max(40, w - right_w - 4), y), right_text, font=font_line, fill=text_color)
                     y += max(18, line_height + 4)
                     if y >= h - 10:
@@ -3592,7 +3830,34 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         text_color = fg_color
                     
                     # Row 1: LineNumber (left) and Departure time + Delay (right)
-                    draw.text((0, y), line_num, font=font_line_bold, fill=text_color)
+                    # For LCD displays, draw line number with its color if available
+                    if DISPLAY_TYPE == "lcd" and line_color_rgb:
+                        # Draw line number with colored background
+                        try:
+                            # Get the bounding box of the text at its actual position
+                            bbox = draw.textbbox((0, y), line_num, font=font_line_bold)
+                            # Add small padding around the text
+                            rect_x1 = bbox[0] - 2
+                            rect_y1 = bbox[1] - 1
+                            rect_x2 = bbox[2] + 2
+                            rect_y2 = bbox[3] + 1
+                        except Exception:
+                            # Fallback if textbbox fails
+                            rect_x1 = 0
+                            rect_y1 = y - 1
+                            rect_x2 = len(line_num) * 8 + 2
+                            rect_y2 = y + row_height + 1
+                        
+                        # Draw colored rectangle behind line number
+                        draw.rectangle([(rect_x1, rect_y1), (rect_x2, rect_y2)], fill=line_color_rgb)
+                        
+                        # Determine text color based on background luminance
+                        luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                        line_num_text_color = (255, 255, 255) if luminance < 128 else (0, 0, 0)
+                        draw.text((0, y), line_num, font=font_line_bold, fill=line_num_text_color)
+                    else:
+                        # eInk or no color: use default text color
+                        draw.text((0, y), line_num, font=font_line_bold, fill=text_color)
                     
                     # Build right side: time + delay (if present)
                     right_text = time_str
@@ -3657,13 +3922,6 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     else:
                         # No scrolling - show full destination
                         draw.text((0, y), dest, font=font_line, fill=text_color)
-                    
-                    # Draw separator line after the second row (only if not the last connection)
-                    if idx < len(displayed_departures) - 1:
-                        separator_y = y + row_height
-                        # Use a subtle separator color (lighter/darker than text)
-                        separator_color = text_color if image.mode == 'RGB' else fg_color
-                        draw.line([(0, separator_y), (w, separator_y)], fill=separator_color, width=1)
                     
                     y += row_height + 2  # Extra spacing between connections
                     if y >= h - 5:
@@ -5138,7 +5396,7 @@ def start_web_server():
             
             zeroconf.register_service(info)
             service_info = info
-            print(f"Bonjour service registered: ovbuddy.local:8080 (IP: {local_ip})")
+            print(f"Bonjour service registered: {hostname}.local:8080 (IP: {local_ip})")
         except Exception as e:
             print(f"Warning: Could not register Bonjour service: {e}")
             print("Web server is still accessible via IP address")

@@ -14,13 +14,13 @@ The script will prompt you to select:
 - **OS Variant**: Lite (minimal) or Full (with desktop environment)
 - **Architecture**: For Pi 4 Lite, choose 32-bit or 64-bit (Pi Zero W is 32-bit only, Pi 4 Full defaults to 64-bit)
 
-## Optional: `setup.env` (non-interactive defaults)
+## Optional: `.env` (non-interactive defaults)
 
-`scripts/setup-sd-card.sh` will automatically load `setup.env` from the project root if present.
+`scripts/setup-sd-card.sh` will automatically load `.env` from the project root if present.
 
 ```bash
-cp setup.env.example setup.env
-# edit setup.env
+cp env.example .env
+# edit .env
 ```
 
 Variables:

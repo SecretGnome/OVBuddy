@@ -17,18 +17,18 @@ echo -e "${BLUE}║          OVBuddy SSH Connection Test                       �
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Load configuration from setup.env
+# Load configuration from .env
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SETUP_ENV="$PROJECT_ROOT/setup.env"
+ENV_FILE="$PROJECT_ROOT/.env"
 
-if [[ -f "$SETUP_ENV" ]]; then
-    echo -e "${GREEN}Loading configuration from setup.env...${NC}"
-    source "$SETUP_ENV"
+if [[ -f "$ENV_FILE" ]]; then
+    echo -e "${GREEN}Loading configuration from .env...${NC}"
+    source "$ENV_FILE"
     echo ""
 else
-    echo -e "${YELLOW}setup.env not found. Please enter connection details:${NC}"
-    read -p "Hostname (e.g., ovbuddy.local): " HOSTNAME
+    echo -e "${YELLOW}.env not found. Please enter connection details:${NC}"
+    read -p "Hostname (e.g., pi.local): " HOSTNAME
     read -p "Username (default: pi): " USERNAME
     USERNAME=${USERNAME:-pi}
     read -sp "Password: " USER_PASSWORD
@@ -37,7 +37,7 @@ else
 fi
 
 # Set defaults
-HOSTNAME=${HOSTNAME:-ovbuddy}
+HOSTNAME=${HOSTNAME:-pi}
 USERNAME=${USERNAME:-pi}
 
 # Add .local if not present
