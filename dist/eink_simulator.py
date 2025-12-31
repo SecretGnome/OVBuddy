@@ -151,19 +151,24 @@ def _run_http_viewer(cfg: SimConfig) -> None:
     root_dir = os.path.dirname(input_abs)
     file_name = os.path.basename(input_abs)
 
+    # Determine display type from dimensions
+    display_type = "lcd" if cfg.width == 128 and cfg.height == 128 else "eink"
+    
     html = f"""<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OVBuddy – eInk Simulator</title>
+    <title>OVBuddy – Display Simulator</title>
     <style>
       body {{ font-family: system-ui, -apple-system, sans-serif; margin: 16px; }}
       .frame {{ border: 1px solid #ddd; display: inline-block; padding: 8px; }}
-      .controls {{ display: flex; gap: 10px; align-items: center; margin: 10px 0 12px; }}
+      .controls {{ display: flex; gap: 10px; align-items: center; margin: 10px 0 12px; flex-wrap: wrap; }}
       .controls label {{ font-size: 13px; color: #333; }}
       .controls .val {{ font-variant-numeric: tabular-nums; min-width: 22px; display: inline-block; text-align: right; }}
       .controls button {{ padding: 4px 10px; }}
+      .controls select {{ padding: 4px 8px; font-size: 13px; }}
+      .control-group {{ display: flex; gap: 10px; align-items: center; }}
       img {{
         image-rendering: pixelated;
         image-rendering: crisp-edges;
@@ -173,19 +178,34 @@ def _run_http_viewer(cfg: SimConfig) -> None:
       }}
       .meta {{ color: #666; margin-top: 8px; font-size: 13px; }}
       code {{ background: #f5f5f5; padding: 2px 4px; border-radius: 4px; }}
+      .info-box {{ background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 8px; margin-top: 8px; font-size: 12px; color: #856404; }}
     </style>
   </head>
   <body>
-    <h3>OVBuddy – eInk Simulator</h3>
+    <h3>OVBuddy – Display Simulator</h3>
     <div class="controls">
-      <label>
-        pixelDensity:
-        <span class="val" id="pdVal">{cfg.pixel_density}</span>
-      </label>
-      <button id="pdDec" type="button">-</button>
-      <input id="pd" type="range" min="1" max="10" step="1" value="{cfg.pixel_density}" />
-      <button id="pdInc" type="button">+</button>
-      <span style="color:#666;font-size:12px;">(persists locally)</span>
+      <div class="control-group">
+        <label>
+          Display Type:
+        </label>
+        <select id="displayType">
+          <option value="eink" {"selected" if display_type == "eink" else ""}>eInk (250×122)</option>
+          <option value="lcd" {"selected" if display_type == "lcd" else ""}>LCD (128×128)</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label>
+          pixelDensity:
+          <span class="val" id="pdVal">{cfg.pixel_density}</span>
+        </label>
+        <button id="pdDec" type="button">-</button>
+        <input id="pd" type="range" min="1" max="10" step="1" value="{cfg.pixel_density}" />
+        <button id="pdInc" type="button">+</button>
+        <span style="color:#666;font-size:12px;">(persists locally)</span>
+      </div>
+    </div>
+    <div id="displayTypeInfo" class="info-box" style="display: none;">
+      Display type changed. Restart the simulator with: <code>OVBUDDY_SIM_DISPLAY_TYPE=lcd ./scripts/run-macos-sim.sh</code> (or <code>eink</code> for eInk)
     </div>
     <div class="frame">
       <img id="img" alt="frame" src="{file_name}?t=0" />
@@ -200,9 +220,18 @@ def _run_http_viewer(cfg: SimConfig) -> None:
       const pdMeta = document.getElementById("pdMeta");
       const btnDec = document.getElementById("pdDec");
       const btnInc = document.getElementById("pdInc");
+      const displayTypeSelect = document.getElementById("displayType");
+      const displayTypeInfo = document.getElementById("displayTypeInfo");
       const baseW = {cfg.width};
       const baseH = {cfg.height};
       const storageKey = "ovbuddy_sim_pixelDensity";
+      const displayTypeKey = "ovbuddy_sim_displayType";
+
+      // Display type dimensions
+      const displayDimensions = {{
+        eink: {{ width: 250, height: 122 }},
+        lcd: {{ width: 128, height: 128 }}
+      }};
 
       function clamp(n, lo, hi) {{
         return Math.max(lo, Math.min(hi, n));
@@ -213,9 +242,30 @@ def _run_http_viewer(cfg: SimConfig) -> None:
         slider.value = String(pd);
         pdVal.textContent = String(pd);
         pdMeta.textContent = String(pd);
-        img.style.width = String(baseW * pd) + "px";
-        img.style.height = String(baseH * pd) + "px";
+        const displayType = displayTypeSelect.value;
+        const dims = displayDimensions[displayType] || displayDimensions.eink;
+        img.style.width = String(dims.width * pd) + "px";
+        img.style.height = String(dims.height * pd) + "px";
         try {{ localStorage.setItem(storageKey, String(pd)); }} catch (e) {{}}
+      }}
+
+      function updateDisplayType() {{
+        const displayType = displayTypeSelect.value;
+        const dims = displayDimensions[displayType] || displayDimensions.eink;
+        const currentDims = {{ width: baseW, height: baseH }};
+        
+        // Show info if dimensions don't match
+        if (dims.width !== currentDims.width || dims.height !== currentDims.height) {{
+          displayTypeInfo.style.display = "block";
+        }} else {{
+          displayTypeInfo.style.display = "none";
+        }}
+        
+        // Update image size
+        applyPD(parseInt(slider.value, 10) || 1);
+        
+        // Save to localStorage
+        try {{ localStorage.setItem(displayTypeKey, displayType); }} catch (e) {{}}
       }}
 
       // Initialize from localStorage if present
@@ -223,6 +273,12 @@ def _run_http_viewer(cfg: SimConfig) -> None:
         const saved = localStorage.getItem(storageKey);
         if (saved) applyPD(saved);
         else applyPD(slider.value);
+        
+        const savedDisplayType = localStorage.getItem(displayTypeKey);
+        if (savedDisplayType && (savedDisplayType === "eink" || savedDisplayType === "lcd")) {{
+          displayTypeSelect.value = savedDisplayType;
+          updateDisplayType();
+        }}
       }} catch (e) {{
         applyPD(slider.value);
       }}
@@ -230,6 +286,7 @@ def _run_http_viewer(cfg: SimConfig) -> None:
       slider.addEventListener("input", (e) => applyPD(e.target.value));
       btnDec.addEventListener("click", () => applyPD((parseInt(slider.value, 10) || 1) - 1));
       btnInc.addEventListener("click", () => applyPD((parseInt(slider.value, 10) || 1) + 1));
+      displayTypeSelect.addEventListener("change", updateDisplayType);
 
       // Keyboard shortcuts: +/- adjust
       window.addEventListener("keydown", (e) => {{
@@ -261,16 +318,47 @@ def _run_http_viewer(cfg: SimConfig) -> None:
                 return
             return super().do_GET()
 
-    with socketserver.TCPServer(("127.0.0.1", cfg.http_port), Handler) as httpd:
-        url = f"http://127.0.0.1:{cfg.http_port}/"
-        sys.stdout.write(f"[sim-viewer] http viewer: {url}\n")
-        sys.stdout.flush()
-        if cfg.open_browser:
-            try:
-                webbrowser.open(url)
-            except Exception:
-                pass
-        httpd.serve_forever()
+    # Try to bind to the requested port, or find an available port
+    port = cfg.http_port
+    max_attempts = 10
+    httpd = None
+    
+    for attempt in range(max_attempts):
+        try:
+            httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError as e:
+            if e.errno == 48:  # Address already in use
+                if attempt < max_attempts - 1:
+                    port += 1
+                    continue
+                else:
+                    sys.stderr.write(
+                        f"[sim-viewer] Error: Could not find available port "
+                        f"(tried {cfg.http_port}-{port}). "
+                        f"Port {cfg.http_port} is already in use.\n"
+                        f"  Kill existing process: lsof -ti:{cfg.http_port} | xargs kill\n"
+                        f"  Or use a different port: OVBUDDY_SIM_HTTP_PORT={port+1} ...\n"
+                    )
+                    sys.stderr.flush()
+                    raise
+            else:
+                raise
+    
+    if httpd is None:
+        raise RuntimeError("Failed to create HTTP server")
+    
+    url = f"http://127.0.0.1:{port}/"
+    if port != cfg.http_port:
+        sys.stdout.write(f"[sim-viewer] Port {cfg.http_port} in use, using {port} instead\n")
+    sys.stdout.write(f"[sim-viewer] http viewer: {url}\n")
+    sys.stdout.flush()
+    if cfg.open_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    httpd.serve_forever()
 
 
 def parse_args(argv) -> SimConfig:

@@ -289,13 +289,38 @@ class SimDisplayBackend(DisplayBackend):
     Simulator resolution can be overridden via:
     - OVBUDDY_SIM_WIDTH
     - OVBUDDY_SIM_HEIGHT
+    - display_type in config (eink: 250x122, lcd: 128x128)
     """
     name = "sim"
     supports_pil = True
 
-    def __init__(self, out_path):
+    def __init__(self, out_path, display_type=None):
         self.out_path = out_path
         self._notified = False
+        # Set dimensions based on display type, but allow env var override
+        sim_width = os.getenv("OVBUDDY_SIM_WIDTH")
+        sim_height = os.getenv("OVBUDDY_SIM_HEIGHT")
+        if sim_width and sim_height:
+            try:
+                self.width = int(sim_width)
+                self.height = int(sim_height)
+            except (ValueError, TypeError):
+                # Fall back to display_type-based dimensions
+                if display_type == "lcd":
+                    self.width = 128
+                    self.height = 128
+                else:
+                    self.width = 250
+                    self.height = 122
+        else:
+            # Set dimensions based on display type
+            if display_type == "lcd":
+                self.width = 128
+                self.height = 128
+            else:
+                # Default to eInk dimensions
+                self.width = 250
+                self.height = 122
 
     def clear(self, inverted=False):
         # No-op for now.
@@ -399,10 +424,28 @@ class HardwareLCDBackend(DisplayBackend):
         except Exception as e:
             print(f"Error clearing LCD: {e}")
 
-    def show_pil(self, image, partial=False, debug_line="", debug_status="", **_kwargs):
-        """Display a PIL image on the LCD."""
+    def show_pil(self, image, partial=False, debug_line="", debug_status="", inverted=None, **_kwargs):
+        """Display a PIL image on the LCD.
+        
+        Args:
+            inverted: If True, invert the image colors. If None, use global INVERTED setting.
+        """
         try:
             from PIL import Image
+            import numpy as np
+            
+            # Get inversion setting: use parameter if provided, otherwise check global
+            if inverted is None:
+                # Access the global INVERTED variable from the module
+                # We need to import it at the module level, but since this is a class method,
+                # we'll read it from the module's globals
+                import sys
+                module_name = __name__
+                if module_name in sys.modules:
+                    module = sys.modules[module_name]
+                    inverted = getattr(module, 'INVERTED', False)
+                else:
+                    inverted = False
             
             # Convert monochrome to RGB for color LCD display
             # eInk images are typically '1' mode (monochrome), LCD needs RGB
@@ -438,7 +481,8 @@ class HardwareLCDBackend(DisplayBackend):
                 
                 # Create a new RGB image with black background and paste centered
                 # Always create exactly (width, height) to fill entire buffer
-                display_img = Image.new('RGB', (self.width, self.height), (0, 0, 0))
+                bg_color = (255, 255, 255) if inverted else (0, 0, 0)
+                display_img = Image.new('RGB', (self.width, self.height), bg_color)
                 
                 # Center the resized image
                 x_offset = (self.width - new_width) // 2
@@ -449,6 +493,27 @@ class HardwareLCDBackend(DisplayBackend):
                 # Image is already correct size, but ensure it's RGB mode
                 if image.mode != 'RGB':
                     image = image.convert('RGB')
+            
+            # Apply inversion if needed (invert RGB values)
+            if inverted:
+                # Invert RGB image: (r, g, b) -> (255-r, 255-g, 255-b)
+                try:
+                    # Try numpy first (fastest)
+                    img_array = np.array(image)
+                    inverted_array = 255 - img_array
+                    image = Image.fromarray(inverted_array.astype('uint8'), 'RGB')
+                except (ImportError, AttributeError, Exception):
+                    # Fallback: use PIL's ImageOps if numpy not available
+                    try:
+                        from PIL import ImageOps
+                        image = ImageOps.invert(image)
+                    except Exception:
+                        # Last resort: manual pixel inversion (slower but always works)
+                        pixels = image.load()
+                        for i in range(image.width):
+                            for j in range(image.height):
+                                r, g, b = pixels[i, j]
+                                pixels[i, j] = (255 - r, 255 - g, 255 - b)
             
             # Display the image (luma.lcd device.display() expects RGB PIL Image)
             # The offsets in device initialization should prevent edge artifacts
@@ -484,7 +549,34 @@ def create_display_backend():
     if mode == "sim":
         current_dir = os.path.dirname(os.path.abspath(__file__))
         out_path = os.getenv("OVBUDDY_SIM_OUT") or os.path.join(current_dir, "sim-output.png")
-        return SimDisplayBackend(out_path)
+        # Check display_type for sim mode (from env var, config, or default to eink)
+        sim_display_type = os.getenv("OVBUDDY_SIM_DISPLAY_TYPE", "").strip().lower()
+        if not sim_display_type:
+            # Try to get from config or global DISPLAY_TYPE
+            try:
+                if 'DISPLAY_TYPE' in globals():
+                    sim_display_type = DISPLAY_TYPE
+                else:
+                    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r') as f:
+                            config = json.load(f)
+                            sim_display_type = config.get("display_type", "eink").strip().lower()
+            except Exception:
+                sim_display_type = "eink"
+        # Validate display_type
+        if sim_display_type not in ("eink", "lcd"):
+            sim_display_type = "eink"
+        
+        # Update global DISPLAY_WIDTH and DISPLAY_HEIGHT based on display_type
+        # (unless explicitly overridden by env vars)
+        global DISPLAY_WIDTH, DISPLAY_HEIGHT
+        sim_backend = SimDisplayBackend(out_path, display_type=sim_display_type)
+        # Update globals to match the backend's dimensions (important for rendering code)
+        DISPLAY_WIDTH = sim_backend.width
+        DISPLAY_HEIGHT = sim_backend.height
+        print(f"[sim] Display type: {sim_display_type}, dimensions: {DISPLAY_WIDTH}x{DISPLAY_HEIGHT}")
+        return sim_backend
 
     # hardware - check config for display type
     if TEST_MODE:
@@ -672,6 +764,9 @@ DEFAULT_CONFIG = {
     "departure_layout": "1row",
     # Destination scroll: enable scrolling destination text from right to left (LCD only, works in both 1-row and 2-row modes)
     "destination_scroll": False,
+    # Scroll speed factor: multiplier for scrolling speed (0.1-5.0, default 1.0)
+    # Higher values scroll faster. All destinations scroll at the same speed.
+    "scroll_speed_factor": 1.0,
     # LCD refresh rate (FPS): display refresh rate for LCD screens in frames per second (1-60, default 30)
     # Higher values enable smoother scrolling but use more CPU. Only applies to LCD displays.
     "lcd_refresh_rate": 30,
@@ -723,6 +818,7 @@ FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]  # derived from DISPLAY_ORIENTATIO
 USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
 DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
 DESTINATION_SCROLL = DEFAULT_CONFIG["destination_scroll"]
+SCROLL_SPEED_FACTOR = DEFAULT_CONFIG["scroll_speed_factor"]
 LCD_REFRESH_RATE = DEFAULT_CONFIG["lcd_refresh_rate"]
 UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
 AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
@@ -752,16 +848,35 @@ def _env_int(name: str, default: int) -> int:
 
 # Simulator-only override: allow changing the logical display resolution for the PNG renderer.
 # This is intentionally NOT exposed via the web UI and has no effect on hardware mode.
+# Note: This will be updated again in create_display_backend() based on display_type,
+# but we set it here from env vars as a fallback.
 if OUTPUT_MODE == "sim":
-    _sim_w = _env_int("OVBUDDY_SIM_WIDTH", DISPLAY_WIDTH)
-    _sim_h = _env_int("OVBUDDY_SIM_HEIGHT", DISPLAY_HEIGHT)
+    _sim_w = _env_int("OVBUDDY_SIM_WIDTH", 0)
+    _sim_h = _env_int("OVBUDDY_SIM_HEIGHT", 0)
     if _sim_w > 0 and _sim_h > 0:
         DISPLAY_WIDTH = _sim_w
         DISPLAY_HEIGHT = _sim_h
+    else:
+        # If not set via env vars, check display_type from env or config
+        sim_display_type = os.getenv("OVBUDDY_SIM_DISPLAY_TYPE", "").strip().lower()
+        if not sim_display_type:
+            # Try to read from config.json
+            try:
+                config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+                if os.path.exists(config_path):
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        sim_display_type = config.get("display_type", "eink").strip().lower()
+            except Exception:
+                pass
+        if sim_display_type == "lcd":
+            DISPLAY_WIDTH = 128
+            DISPLAY_HEIGHT = 128
+        # else keep defaults (250x122 for eink)
 
-# Scroll position tracking for destination text (LCD scrolling feature)
-# Key: destination text, Value: current scroll offset in pixels
-_DESTINATION_SCROLL_POSITIONS = {}
+# Global scroll offset for destination text (LCD scrolling feature)
+# All destinations scroll together using the same offset
+_DESTINATION_SCROLL_OFFSET = 0.0
 _DESTINATION_SCROLL_LOCK = threading.Lock()
 
 # UI event file: used to show short feedback messages on the e-ink display
@@ -853,7 +968,7 @@ def _apply_default_config():
     """Reset all config globals to DEFAULT_CONFIG (thread-safe; caller holds CONFIG_LOCK)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
 
@@ -871,6 +986,7 @@ def _apply_default_config():
     USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
     DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
     DESTINATION_SCROLL = DEFAULT_CONFIG["destination_scroll"]
+    SCROLL_SPEED_FACTOR = DEFAULT_CONFIG["scroll_speed_factor"]
     LCD_REFRESH_RATE = DEFAULT_CONFIG["lcd_refresh_rate"]
     UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
     AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
@@ -886,7 +1002,7 @@ def load_config(force: bool = False):
     """Load configuration from config.json file (unless disabled via web module settings)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     global CONFIG_LAST_MODIFIED
@@ -950,6 +1066,9 @@ def load_config(force: bool = False):
             else:
                 DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
             DESTINATION_SCROLL = _parse_bool(config.get("destination_scroll", DEFAULT_CONFIG["destination_scroll"]), DEFAULT_CONFIG["destination_scroll"])
+            # Scroll speed factor: 0.1-5.0, default 1.0
+            raw_scroll_speed = config.get("scroll_speed_factor", DEFAULT_CONFIG["scroll_speed_factor"])
+            SCROLL_SPEED_FACTOR = max(0.1, min(5.0, float(raw_scroll_speed))) if isinstance(raw_scroll_speed, (int, float)) else DEFAULT_CONFIG["scroll_speed_factor"]
             # LCD refresh rate: 1-60 FPS, default 30
             raw_lcd_refresh = config.get("lcd_refresh_rate", DEFAULT_CONFIG["lcd_refresh_rate"])
             LCD_REFRESH_RATE = max(1, min(60, int(raw_lcd_refresh))) if isinstance(raw_lcd_refresh, (int, float)) else DEFAULT_CONFIG["lcd_refresh_rate"]
@@ -995,6 +1114,7 @@ def save_config():
             "use_partial_refresh": USE_PARTIAL_REFRESH,
             "departure_layout": DEPARTURE_LAYOUT,
             "destination_scroll": DESTINATION_SCROLL,
+            "scroll_speed_factor": SCROLL_SPEED_FACTOR,
             "lcd_refresh_rate": LCD_REFRESH_RATE,
             "update_repository_url": UPDATE_REPOSITORY_URL,
             "ap_fallback_enabled": AP_FALLBACK_ENABLED,
@@ -1056,7 +1176,7 @@ def update_config(new_config):
     """Update configuration from a dictionary (thread-safe)"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     
@@ -1103,6 +1223,9 @@ def update_config(new_config):
                 DEPARTURE_LAYOUT = dl
         if "destination_scroll" in new_config:
             DESTINATION_SCROLL = _parse_bool(new_config["destination_scroll"], DESTINATION_SCROLL)
+        if "scroll_speed_factor" in new_config:
+            raw_scroll_speed = new_config["scroll_speed_factor"]
+            SCROLL_SPEED_FACTOR = max(0.1, min(5.0, float(raw_scroll_speed))) if isinstance(raw_scroll_speed, (int, float)) else SCROLL_SPEED_FACTOR
         if "lcd_refresh_rate" in new_config:
             raw_lcd_refresh = new_config["lcd_refresh_rate"]
             LCD_REFRESH_RATE = max(1, min(60, int(raw_lcd_refresh))) if isinstance(raw_lcd_refresh, (int, float)) else LCD_REFRESH_RATE
@@ -2011,6 +2134,60 @@ def _format_delay_suffix(entry, for_terminal: bool = False) -> str:
         return f" >{delay_minutes}min"
     return f">{delay_minutes}min"
 
+def _extract_line_color(entry):
+    """Extract line color from API entry.
+    
+    Checks multiple possible fields:
+    - entry.get('color')
+    - entry.get('fgColor')
+    - entry.get('operator', {}).get('color')
+    - entry.get('operator', {}).get('fgColor')
+    
+    Returns RGB tuple (r, g, b) or None if not found.
+    """
+    # Try direct color fields
+    color = entry.get('color') or entry.get('fgColor')
+    if color:
+        return _hex_to_rgb(color)
+    
+    # Try operator color fields
+    operator = entry.get('operator', {})
+    if isinstance(operator, dict):
+        color = operator.get('color') or operator.get('fgColor')
+        if color:
+            return _hex_to_rgb(color)
+    
+    return None
+
+def _hex_to_rgb(hex_color):
+    """Convert hex color string to RGB tuple.
+    
+    Supports formats: '#RRGGBB', 'RRGGBB', '#RGB', 'RGB'
+    Returns (r, g, b) tuple or None if invalid.
+    """
+    if not hex_color:
+        return None
+    
+    # Remove '#' if present
+    hex_color = str(hex_color).strip().lstrip('#')
+    
+    # Handle short format (#RGB -> #RRGGBB)
+    if len(hex_color) == 3:
+        hex_color = ''.join([c * 2 for c in hex_color])
+    
+    # Validate length
+    if len(hex_color) != 6:
+        return None
+    
+    try:
+        # Convert to RGB tuple
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        return (r, g, b)
+    except (ValueError, IndexError):
+        return None
+
 def safe_ascii(text):
     """Convert text to ASCII-safe string, replacing Unicode characters"""
     if not text:
@@ -2225,19 +2402,19 @@ def render_qr_code(display=None, test_mode=False):
         if ap_active and ap_info:
             lines.append("")
             lines.append("AP Mode")
-            lines.append(f"SSID: {safe_ascii(ap_info.get('ssid', ''))}")
+            lines.append(safe_ascii(ap_info.get('ssid', '')))
             pwd = ap_info.get("password") or ""
             if pwd:
-                lines.append("PWD: " + (safe_ascii(pwd) if ap_info.get("display_password") else "********"))
+                lines.append(safe_ascii(pwd) if ap_info.get("display_password") else "********")
         else:
             wifi_status = get_wifi_status()
             ssid = safe_ascii(wifi_status.get("ssid") or "")
             ip = safe_ascii(wifi_status.get("ip") or get_local_ip() or "")
             if ssid:
                 lines.append("")
-                lines.append(f"WiFi: {ssid}")
+                lines.append(ssid)
             if ip:
-                lines.append(f"IP: {ip}")
+                lines.append(ip)
         lines.extend(["", "Scan QR (device) or open URL", f"v{VERSION}"])
         display.show_text("OVBuddy", time.strftime("%H:%M"), lines, inverted=INVERTED)
         return
@@ -2274,8 +2451,8 @@ def render_qr_code(display=None, test_mode=False):
                 f"URL:",
                 safe_ascii(url),
                 "",
-                f"{'AP' if ap_active else 'WiFi'}: {ssid or 'Not connected'}",
-                f"IP: {safe_ascii(str(ip))}",
+                ssid or 'Not connected',
+                safe_ascii(str(ip)),
                 "",
                 f"v{VERSION}",
             ]
@@ -2413,9 +2590,9 @@ def render_qr_code(display=None, test_mode=False):
             
             # Draw SSID
             if ssid:
-                ssid_text = f"{'AP' if ap_active else 'WiFi'}: {ssid}"
+                ssid_text = ssid
             else:
-                ssid_text = "WiFi: Not connected"
+                ssid_text = "Not connected"
             
             # Truncate SSID text if too long
             try:
@@ -2435,7 +2612,7 @@ def render_qr_code(display=None, test_mode=False):
             # Optional: show AP password on QR screen (only in AP mode)
             if ap_active and ap_info and ap_info.get("password"):
                 pwd_value = ap_info["password"] if ap_info.get("display_password") else "********"
-                pwd_text = f"PWD: {safe_ascii(pwd_value)}"
+                pwd_text = safe_ascii(pwd_value)
                 # Truncate if too long for the text area
                 try:
                     bbox = draw.textbbox((0, 0), pwd_text, font=font)
@@ -2449,27 +2626,11 @@ def render_qr_code(display=None, test_mode=False):
                 draw.text((x, info_y + line_height), pwd_text, font=font, fill=fg_color)
 
             # Draw IP address (with empty line between SSID and IP)
-            # Measure "WiFi:" label width to align IP value with SSID value
-            try:
-                wifi_label_bbox = draw.textbbox((0, 0), "WiFi: ", font=font)
-                wifi_label_width = wifi_label_bbox[2] - wifi_label_bbox[0]
-            except:
-                wifi_label_width = len("WiFi: ") * 6
-            
             # If we printed password, push IP down one more line.
             ip_y = info_y + line_height * (3 if (ap_active and ap_info and ap_info.get("password")) else 2)
             
-            # Draw IP label and value, aligning value with SSID value
-            ip_label = "IP:"
-            try:
-                ip_label_bbox = draw.textbbox((0, 0), ip_label, font=font)
-                ip_label_width = ip_label_bbox[2] - ip_label_bbox[0]
-            except:
-                ip_label_width = len(ip_label) * 6
-            
-            # Position IP label, then align IP value with SSID value
-            draw.text((x, ip_y), ip_label, font=font, fill=fg_color)
-            ip_value_x = x + wifi_label_width  # Align with SSID value position
+            # Draw IP value aligned with SSID value (no label)
+            ip_value_x = x
             
             # Try to fit IP with port on one line
             ip_text = f"{ip}:8080"
@@ -3110,6 +3271,23 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
             font_line_bold = font_line
             if test_mode:
                 print("Bold font not available, using regular font for delays")
+        
+        # Create a smaller font for delay text (about 75% of regular font size)
+        font_delay = None
+        try:
+            delay_font_size = max(6, int(font_size * 0.75))
+            if font_line is not None and hasattr(font_line, "path") and getattr(font_line, "path", None):
+                font_delay = ImageFont.truetype(getattr(font_line, "path"), delay_font_size)
+            else:
+                for fp in font_paths:
+                    if os.path.exists(fp):
+                        font_delay = ImageFont.truetype(fp, delay_font_size)
+                        break
+        except Exception:
+            pass
+        if font_delay is None:
+            # Fallback to regular font if smaller font creation failed
+            font_delay = font_line
 
         # Header font: use the same family if we found TrueType for the lines.
         try:
@@ -3131,8 +3309,8 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         font_line = ImageFont.load_default()
         font_line_bold = font_line
     
-    # Draw header (skip station header in left/right orientation)
-    if not _is_portrait_orientation():
+    # Draw header (skip station header in left/right orientation or when using LCD)
+    if not _is_portrait_orientation() and DISPLAY_TYPE != "lcd":
         draw.text((0, 0), header_text, font=font_header, fill=fg_color)
     
     # Always show update time in top right corner
@@ -3145,7 +3323,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         # Fallback: approximate width (default font ~6px per char)
         time_width = len(current_time) * 6
     time_x = w - time_width - 2  # 2px margin from right edge
-    draw.text((time_x, 0), current_time, font=font_header, fill=fg_color)
+    draw.text((time_x, -1), current_time, font=font_header, fill=fg_color)
     
     draw.line((0, 10, w, 10), fill=fg_color)
 
@@ -3188,52 +3366,103 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         # Check if 2-row layout is enabled (works for both portrait and landscape)
         use_2row_layout = (DEPARTURE_LAYOUT == "2row")
         
-        # Clean up scroll positions for destinations that are no longer displayed
-        # Works for both 1-row and 2-row layouts (LCD only)
+        # Update global scroll offset for all destinations (LCD only)
+        # All destinations scroll together at the same speed
         if DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL:
-            current_destinations = set()
-            for entry in departures[:MAX_DEPARTURES]:
-                dest_raw = entry.get("to", "")
-                dest = safe_ascii(clean_destination_name(dest_raw))
-                current_destinations.add(dest)
-            
             with _DESTINATION_SCROLL_LOCK:
-                # Remove scroll positions for destinations not in current list
-                keys_to_remove = [k for k in _DESTINATION_SCROLL_POSITIONS.keys() if k not in current_destinations]
-                for key in keys_to_remove:
-                    del _DESTINATION_SCROLL_POSITIONS[key]
+                # Update global scroll offset based on speed factor
+                # Base speed is 2 pixels per frame, multiplied by speed factor
+                base_speed = 2.0
+                scroll_delta = base_speed * SCROLL_SPEED_FACTOR
+                global _DESTINATION_SCROLL_OFFSET
+                _DESTINATION_SCROLL_OFFSET -= scroll_delta
+                # Reset offset when it gets too negative (prevents overflow)
+                # This will cause all destinations to restart scrolling from the right
+                if _DESTINATION_SCROLL_OFFSET < -2000:
+                    _DESTINATION_SCROLL_OFFSET = 0
         
         if _is_portrait_orientation():
             # Portrait orientation (left/right)
             
             if use_2row_layout:
                 # Two-row layout (works for both eInk and LCD displays):
-                # Row 1: [LineNumber|leftAligned] [Departure|rightAligned]
-                # Row 2: [Destination|leftAligned] [Delay|rightAligned]
+                # Row 1: [LineNumber|left] [Departure Time + Delay|right]
+                # Row 2: [Destination|full width, left aligned]
                 y = 14
                 row_height = max(16, line_height + 2)  # Space for two rows per connection
+                displayed_departures = departures[:MAX_DEPARTURES]
                 
-                for entry in departures[:MAX_DEPARTURES]:
+                for idx, entry in enumerate(displayed_departures):
                     line_num = format_line_number(entry).strip()
                     time_str = entry["stop"]["departure"][11:16]
                     delay_str = _format_delay_suffix(entry, for_terminal=False)
                     dest_raw = entry.get("to", "")
                     dest = safe_ascii(clean_destination_name(dest_raw))
                     
-                    # Row 1: LineNumber (left) and Departure time (right)
-                    draw.text((4, y), line_num, font=font_line_bold, fill=fg_color)
+                    # Extract line color and use as background
+                    line_color_rgb = _extract_line_color(entry)
+                    row_bottom = y + (row_height * 2) + 2  # Both rows plus spacing
                     
-                    # Measure departure time width for right alignment
+                    if line_color_rgb:
+                        # Draw background rectangle with line color
+                        # For monochrome displays, convert to grayscale
+                        if image.mode == '1' or image.mode == 'L':
+                            # Convert RGB to grayscale (luminance formula)
+                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
+                            bg_color = gray if not INVERTED else (255 - gray)
+                        else:
+                            # RGB mode (LCD)
+                            bg_color = line_color_rgb
+                        
+                        # Draw background for both rows
+                        draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color)
+                        
+                        # Adjust text color for readability on colored background
+                        # Use white text if background is dark, black if light
+                        if image.mode == 'RGB':
+                            # For color displays, determine if background is light or dark
+                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
+                        else:
+                            # For monochrome, use inverted foreground color
+                            text_color = bg_color if INVERTED else (255 - bg_color if isinstance(bg_color, int) else fg_color)
+                    else:
+                        # No color available, use default
+                        text_color = fg_color
+                    
+                    # Row 1: LineNumber (left) and Departure time + Delay (right)
+                    draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
+                    
+                    # Build right side: time + delay (if present)
+                    right_text = time_str
+                    if delay_str:
+                        right_text = time_str + " " + delay_str
+                    
+                    # Measure right side text width for right alignment
                     try:
-                        bbox = draw.textbbox((0, 0), time_str, font=font_line)
-                        time_w = bbox[2] - bbox[0]
+                        # Measure time with regular font
+                        bbox_time = draw.textbbox((0, 0), time_str, font=font_line)
+                        time_w = bbox_time[2] - bbox_time[0]
+                        # Measure delay with smaller font if present
+                        delay_w = 0
+                        if delay_str:
+                            bbox_delay = draw.textbbox((0, 0), " " + delay_str, font=font_delay)
+                            delay_w = bbox_delay[2] - bbox_delay[0]
+                        total_w = time_w + delay_w
                     except Exception:
                         time_w = len(time_str) * 6
-                    draw.text((w - time_w - 4, y), time_str, font=font_line, fill=fg_color)
+                        delay_w = (len(" " + delay_str) * 5) if delay_str else 0  # Smaller font = smaller char width
+                        total_w = time_w + delay_w
+                    
+                    # Draw time
+                    draw.text((w - total_w - 4, y), time_str, font=font_line, fill=text_color)
+                    # Draw delay with smaller font if present
+                    if delay_str:
+                        draw.text((w - delay_w - 4, y), " " + delay_str, font=font_delay, fill=text_color)
                     
                     y += row_height
                     
-                    # Row 2: Destination (left) and Delay (right)
+                    # Row 2: Destination (full width, left aligned)
                     # Check if scrolling is enabled (LCD + destination_scroll)
                     scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
                     
@@ -3245,50 +3474,38 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         except Exception:
                             dest_w = len(dest) * 6
                         
-                        # Measure delay width for available space calculation
-                        delay_w = 0
-                        if delay_str:
-                            try:
-                                bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
-                                delay_w = bbox[2] - bbox[0] + 4  # Add padding
-                            except Exception:
-                                delay_w = (len(delay_str) + 1) * 6
-                        
-                        available_width = w - 8 - delay_w  # Leave space for left margin and delay
+                        available_width = w - 8  # Full width minus margins
                         
                         # Only scroll if destination is wider than available space
                         if dest_w > available_width:
-                            # Get or initialize scroll position for this destination
+                            # Use global scroll offset for synchronized scrolling
+                            # All destinations use the same offset, so they scroll at the same speed
                             with _DESTINATION_SCROLL_LOCK:
-                                if dest not in _DESTINATION_SCROLL_POSITIONS:
-                                    # Start with text fully off-screen to the right
-                                    _DESTINATION_SCROLL_POSITIONS[dest] = available_width
-                                else:
-                                    # Move text left (decrease offset)
-                                    scroll_speed = 2  # pixels per frame
-                                    _DESTINATION_SCROLL_POSITIONS[dest] -= scroll_speed
-                                    # Reset when text is fully off-screen to the left
-                                    if _DESTINATION_SCROLL_POSITIONS[dest] < -dest_w:
-                                        _DESTINATION_SCROLL_POSITIONS[dest] = available_width
-                                scroll_x = _DESTINATION_SCROLL_POSITIONS[dest]
+                                scroll_x = _DESTINATION_SCROLL_OFFSET + available_width
+                                # Wrap around when this destination's text is fully off-screen to the left
+                                # Each destination wraps independently based on its text width
+                                wrap_cycle = dest_w + available_width
+                                if scroll_x < -dest_w:
+                                    # Wrap to start position
+                                    scroll_x = scroll_x % wrap_cycle
+                                    if scroll_x < -dest_w:
+                                        scroll_x += wrap_cycle
                             
                             # Draw destination at scroll position
-                            draw.text((4 + scroll_x, y), dest, font=font_line, fill=fg_color)
+                            draw.text((4 + scroll_x, y), dest, font=font_line, fill=text_color)
                         else:
                             # Text fits, no scrolling needed
-                            draw.text((4, y), dest, font=font_line, fill=fg_color)
+                            draw.text((4, y), dest, font=font_line, fill=text_color)
                     else:
                         # No scrolling - show full destination
-                        draw.text((4, y), dest, font=font_line, fill=fg_color)
+                        draw.text((4, y), dest, font=font_line, fill=text_color)
                     
-                    # Draw delay on the right if present
-                    if delay_str:
-                        try:
-                            bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
-                            delay_w = bbox[2] - bbox[0]
-                        except Exception:
-                            delay_w = len(delay_str) * 6
-                        draw.text((w - delay_w - 4, y), delay_str, font=font_line_bold, fill=fg_color)
+                    # Draw separator line after the second row (only if not the last connection)
+                    if idx < len(displayed_departures) - 1:
+                        separator_y = y + row_height
+                        # Use a subtle separator color (lighter/darker than text)
+                        separator_color = text_color if image.mode == 'RGB' else fg_color
+                        draw.line([(0, separator_y), (w, separator_y)], fill=separator_color, width=1)
                     
                     y += row_height + 2  # Extra spacing between connections
                     if y >= h - 10:
@@ -3302,6 +3519,28 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     delay_str = _format_delay_suffix(entry, for_terminal=False)
                     right_text = time_str + (f" {delay_str}" if delay_str else "")
 
+                    # Extract line color and use as background
+                    line_color_rgb = _extract_line_color(entry)
+                    row_height_1row = max(18, line_height + 4)
+                    row_bottom = y + row_height_1row
+                    
+                    if line_color_rgb:
+                        if image.mode == '1' or image.mode == 'L':
+                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
+                            bg_color = gray if not INVERTED else (255 - gray)
+                        else:
+                            bg_color = line_color_rgb
+                        
+                        draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color)
+                        
+                        if image.mode == 'RGB':
+                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
+                        else:
+                            text_color = bg_color if INVERTED else (255 - bg_color if isinstance(bg_color, int) else fg_color)
+                    else:
+                        text_color = fg_color
+
                     # Measure right text for alignment
                     try:
                         bbox = draw.textbbox((0, 0), right_text, font=font_line_bold)
@@ -3309,8 +3548,8 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     except Exception:
                         right_w = len(right_text) * 6
 
-                    draw.text((4, y), line_num, font=font_line_bold, fill=fg_color)
-                    draw.text((max(40, w - right_w - 4), y), right_text, font=font_line, fill=fg_color)
+                    draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
+                    draw.text((max(40, w - right_w - 4), y), right_text, font=font_line, fill=text_color)
                     y += max(18, line_height + 4)
                     if y >= h - 10:
                         break
@@ -3318,31 +3557,73 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
             # Landscape orientation (bottom/top)
             if use_2row_layout:
                 # Two-row layout for landscape orientation:
-                # Row 1: [LineNumber|left] [Departure|right]
-                # Row 2: [Destination|left] [Delay|right]
+                # Row 1: [LineNumber|left] [Departure Time + Delay|right]
+                # Row 2: [Destination|full width, left aligned]
                 row_height = max(16, line_height + 2)  # Space for two rows per connection
+                displayed_departures = departures[:MAX_DEPARTURES]
                 
-                for entry in departures[:MAX_DEPARTURES]:
+                for idx, entry in enumerate(displayed_departures):
                     line_num = format_line_number(entry).strip()
                     time_str = entry["stop"]["departure"][11:16]
                     delay_str = _format_delay_suffix(entry, for_terminal=False)
                     dest_raw = entry.get("to", "")
                     dest = safe_ascii(clean_destination_name(dest_raw))
                     
-                    # Row 1: LineNumber (left) and Departure time (right)
-                    draw.text((0, y), line_num, font=font_line_bold, fill=fg_color)
+                    # Extract line color and use as background
+                    line_color_rgb = _extract_line_color(entry)
+                    row_bottom = y + (row_height * 2) + 2  # Both rows plus spacing
                     
-                    # Measure departure time width for right alignment
+                    if line_color_rgb:
+                        # Draw background rectangle with line color
+                        if image.mode == '1' or image.mode == 'L':
+                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
+                            bg_color = gray if not INVERTED else (255 - gray)
+                        else:
+                            bg_color = line_color_rgb
+                        
+                        draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color)
+                        
+                        if image.mode == 'RGB':
+                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
+                        else:
+                            text_color = bg_color if INVERTED else (255 - bg_color if isinstance(bg_color, int) else fg_color)
+                    else:
+                        text_color = fg_color
+                    
+                    # Row 1: LineNumber (left) and Departure time + Delay (right)
+                    draw.text((0, y), line_num, font=font_line_bold, fill=text_color)
+                    
+                    # Build right side: time + delay (if present)
+                    right_text = time_str
+                    if delay_str:
+                        right_text = time_str + " " + delay_str
+                    
+                    # Measure right side text width for right alignment
                     try:
-                        bbox = draw.textbbox((0, 0), time_str, font=font_line)
-                        time_w = bbox[2] - bbox[0]
+                        # Measure time with regular font
+                        bbox_time = draw.textbbox((0, 0), time_str, font=font_line)
+                        time_w = bbox_time[2] - bbox_time[0]
+                        # Measure delay with smaller font if present
+                        delay_w = 0
+                        if delay_str:
+                            bbox_delay = draw.textbbox((0, 0), " " + delay_str, font=font_delay)
+                            delay_w = bbox_delay[2] - bbox_delay[0]
+                        total_w = time_w + delay_w
                     except Exception:
                         time_w = len(time_str) * 6
-                    draw.text((w - time_w - 2, y), time_str, font=font_line, fill=fg_color)
+                        delay_w = (len(" " + delay_str) * 5) if delay_str else 0  # Smaller font = smaller char width
+                        total_w = time_w + delay_w
+                    
+                    # Draw time
+                    draw.text((w - total_w - 2, y), time_str, font=font_line, fill=text_color)
+                    # Draw delay with smaller font if present
+                    if delay_str:
+                        draw.text((w - delay_w - 2, y), " " + delay_str, font=font_delay, fill=text_color)
                     
                     y += row_height
                     
-                    # Row 2: Destination (left) and Delay (right)
+                    # Row 2: Destination (full width, left aligned)
                     # Check if scrolling is enabled (LCD + destination_scroll)
                     scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
                     
@@ -3354,50 +3635,35 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         except Exception:
                             dest_w = len(dest) * 6
                         
-                        # Measure delay width for available space calculation
-                        delay_w = 0
-                        if delay_str:
-                            try:
-                                bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
-                                delay_w = bbox[2] - bbox[0] + 4  # Add padding
-                            except Exception:
-                                delay_w = (len(delay_str) + 1) * 6
-                        
-                        available_width = w - 4 - delay_w  # Leave space for left margin and delay
+                        available_width = w - 4  # Full width minus margins
                         
                         # Only scroll if destination is wider than available space
                         if dest_w > available_width:
-                            # Get or initialize scroll position for this destination
+                            # Use global scroll offset for synchronized scrolling
+                            # All destinations use the same offset, so they scroll at the same speed
                             with _DESTINATION_SCROLL_LOCK:
-                                if dest not in _DESTINATION_SCROLL_POSITIONS:
-                                    # Start with text fully off-screen to the right
-                                    _DESTINATION_SCROLL_POSITIONS[dest] = available_width
-                                else:
-                                    # Move text left (decrease offset)
-                                    scroll_speed = 2  # pixels per frame
-                                    _DESTINATION_SCROLL_POSITIONS[dest] -= scroll_speed
-                                    # Reset when text is fully off-screen to the left
-                                    if _DESTINATION_SCROLL_POSITIONS[dest] < -dest_w:
-                                        _DESTINATION_SCROLL_POSITIONS[dest] = available_width
-                                scroll_x = _DESTINATION_SCROLL_POSITIONS[dest]
+                                scroll_x = _DESTINATION_SCROLL_OFFSET + available_width
+                                # Wrap around when this destination's text is fully off-screen to the left
+                                wrap_cycle = dest_w + available_width
+                                while scroll_x < -dest_w:
+                                    # Wrap to start position (text fully off-screen to the right)
+                                    scroll_x += wrap_cycle
                             
                             # Draw destination at scroll position
-                            draw.text((0 + scroll_x, y), dest, font=font_line, fill=fg_color)
+                            draw.text((0 + scroll_x, y), dest, font=font_line, fill=text_color)
                         else:
                             # Text fits, no scrolling needed
-                            draw.text((0, y), dest, font=font_line, fill=fg_color)
+                            draw.text((0, y), dest, font=font_line, fill=text_color)
                     else:
                         # No scrolling - show full destination
-                        draw.text((0, y), dest, font=font_line, fill=fg_color)
+                        draw.text((0, y), dest, font=font_line, fill=text_color)
                     
-                    # Draw delay on the right if present
-                    if delay_str:
-                        try:
-                            bbox = draw.textbbox((0, 0), delay_str, font=font_line_bold)
-                            delay_w = bbox[2] - bbox[0]
-                        except Exception:
-                            delay_w = len(delay_str) * 6
-                        draw.text((w - delay_w - 2, y), delay_str, font=font_line_bold, fill=fg_color)
+                    # Draw separator line after the second row (only if not the last connection)
+                    if idx < len(displayed_departures) - 1:
+                        separator_y = y + row_height
+                        # Use a subtle separator color (lighter/darker than text)
+                        separator_color = text_color if image.mode == 'RGB' else fg_color
+                        draw.line([(0, separator_y), (w, separator_y)], fill=separator_color, width=1)
                     
                     y += row_height + 2  # Extra spacing between connections
                     if y >= h - 5:
@@ -3430,6 +3696,27 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     dest_raw = entry["to"]
                     dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
                     time_str = entry["stop"]["departure"][11:16]  # HH:MM
+                    
+                    # Extract line color and use as background
+                    line_color_rgb = _extract_line_color(entry)
+                    row_bottom = y + line_spacing
+                    
+                    if line_color_rgb:
+                        if image.mode == '1' or image.mode == 'L':
+                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
+                            bg_color_row = gray if not INVERTED else (255 - gray)
+                        else:
+                            bg_color_row = line_color_rgb
+                        
+                        draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color_row)
+                        
+                        if image.mode == 'RGB':
+                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
+                        else:
+                            text_color = bg_color_row if INVERTED else (255 - bg_color_row if isinstance(bg_color_row, int) else fg_color)
+                    else:
+                        text_color = fg_color
                     
                     # Delay suffix (minutes)
                     delay_str = _format_delay_suffix(entry, for_terminal=False)
@@ -3466,40 +3753,36 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         
                         # Only scroll if destination is wider than available space
                         if dest_w > available_width:
-                            # Get or initialize scroll position for this destination
+                            # Use global scroll offset for synchronized scrolling
+                            # All destinations use the same offset, so they scroll at the same speed
                             with _DESTINATION_SCROLL_LOCK:
-                                if dest not in _DESTINATION_SCROLL_POSITIONS:
-                                    # Start with text fully off-screen to the right
-                                    _DESTINATION_SCROLL_POSITIONS[dest] = available_width
-                                else:
-                                    # Move text left (decrease offset)
-                                    scroll_speed = 2  # pixels per frame
-                                    _DESTINATION_SCROLL_POSITIONS[dest] -= scroll_speed
-                                    # Reset when text is fully off-screen to the left
-                                    if _DESTINATION_SCROLL_POSITIONS[dest] < -dest_w:
-                                        _DESTINATION_SCROLL_POSITIONS[dest] = available_width
-                                scroll_x = _DESTINATION_SCROLL_POSITIONS[dest]
+                                scroll_x = _DESTINATION_SCROLL_OFFSET + available_width
+                                # Wrap around when this destination's text is fully off-screen to the left
+                                wrap_cycle = dest_w + available_width
+                                while scroll_x < -dest_w:
+                                    # Wrap to start position (text fully off-screen to the right)
+                                    scroll_x += wrap_cycle
                             
                             # Draw: line, destination (scrolled), time, delay
-                            draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
-                            draw.text((dest_x + scroll_x, y), dest, font=font_line, fill=fg_color)
+                            draw.text((line_num_x, y), line_num, font=font_line, fill=text_color)
+                            draw.text((dest_x + scroll_x, y), dest, font=font_line, fill=text_color)
                             
                             time_draw_x = time_x - time_delay_width
-                            draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
+                            draw.text((time_draw_x, y), time_str, font=font_line, fill=text_color)
                             if delay_str:
                                 delay_draw_x = time_draw_x + time_width
-                                draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
+                                draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=text_color)
                         else:
                             # Text fits, no scrolling needed
                             # Draw: line, destination, time, delay
-                            draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
-                            draw.text((dest_x, y), dest, font=font_line, fill=fg_color)
+                            draw.text((line_num_x, y), line_num, font=font_line, fill=text_color)
+                            draw.text((dest_x, y), dest, font=font_line, fill=text_color)
                             
                             time_draw_x = time_x - time_delay_width
-                            draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
+                            draw.text((time_draw_x, y), time_str, font=font_line, fill=text_color)
                             if delay_str:
                                 delay_draw_x = time_draw_x + time_width
-                                draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
+                                draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=text_color)
                     else:
                         # No scrolling - use truncation as before
                         dest_max_width = time_x - dest_x - time_delay_width - 5
@@ -3509,14 +3792,14 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                             dest = dest[:truncate_to] + "..."
                         
                         # Draw: line, destination, time, delay
-                        draw.text((line_num_x, y), line_num, font=font_line, fill=fg_color)
-                        draw.text((dest_x, y), dest, font=font_line, fill=fg_color)
+                        draw.text((line_num_x, y), line_num, font=font_line, fill=text_color)
+                        draw.text((dest_x, y), dest, font=font_line, fill=text_color)
                         
                         time_draw_x = time_x - time_delay_width
-                        draw.text((time_draw_x, y), time_str, font=font_line, fill=fg_color)
+                        draw.text((time_draw_x, y), time_str, font=font_line, fill=text_color)
                         if delay_str:
                             delay_draw_x = time_draw_x + time_width
-                            draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=fg_color)
+                            draw.text((delay_draw_x, y), f" {delay_str}", font=font_line_bold, fill=text_color)
                     
                     y += line_spacing
             # end not portrait
@@ -3563,7 +3846,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         if reason:
             print(f"Using full refresh: {', '.join(reason)}")
 
-    display.show_pil(image, partial=use_partial, debug_line=debug_line, debug_status=debug_status)
+    display.show_pil(image, partial=use_partial, debug_line=debug_line, debug_status=debug_status, inverted=INVERTED)
 
 # --------------------------
 # WIFI MANAGEMENT

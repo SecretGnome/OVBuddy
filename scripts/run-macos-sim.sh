@@ -8,11 +8,14 @@ set -euo pipefail
 # Usage:
 #   ./scripts/run-macos-sim.sh
 #   ./scripts/run-macos-sim.sh --test
+#   ./scripts/run-macos-sim.sh --display-type lcd
+#   ./scripts/run-macos-sim.sh --display-type eink
 #
 # Env:
 #   OVBUDDY_SIM_OUT=/path/to/frame.png          (default: dist/sim-output.png)
-#   OVBUDDY_SIM_WIDTH=250                       (default: 250)
-#   OVBUDDY_SIM_HEIGHT=122                      (default: 122)
+#   OVBUDDY_SIM_DISPLAY_TYPE=eink|lcd           (default: eink, or from config.json)
+#   OVBUDDY_SIM_WIDTH=250                       (default: auto based on display_type)
+#   OVBUDDY_SIM_HEIGHT=122                      (default: auto based on display_type)
 #   OVBUDDY_SIM_PIXEL_DENSITY=3                 (default: 3)  # viewer scale factor
 #   OVBUDDY_SIM_VIEWER=1                        (default: 1)  # set 0 to disable viewer
 
@@ -29,8 +32,62 @@ export PYTHONUNBUFFERED=1
 export TEST_MODE=1
 export OVBUDDY_OUTPUT=sim
 export OVBUDDY_SIM_OUT="${OVBUDDY_SIM_OUT:-${DIST_DIR}/sim-output.png}"
-export OVBUDDY_SIM_WIDTH="${OVBUDDY_SIM_WIDTH:-250}"
-export OVBUDDY_SIM_HEIGHT="${OVBUDDY_SIM_HEIGHT:-122}"
+
+# Parse command-line arguments for display type
+DISPLAY_TYPE_ARG=""
+ARGS=()
+expect_display_type=false
+for arg in "$@"; do
+    if [[ "$expect_display_type" == "true" ]]; then
+        DISPLAY_TYPE_ARG="$arg"
+        expect_display_type=false
+        continue
+    fi
+    case "$arg" in
+        --display-type=*)
+            DISPLAY_TYPE_ARG="${arg#*=}"
+            ;;
+        --display-type)
+            expect_display_type=true
+            ;;
+        *)
+            ARGS+=("$arg")
+            ;;
+    esac
+done
+
+# Determine display type: from arg, env var, or config file
+if [[ -n "$DISPLAY_TYPE_ARG" ]]; then
+    export OVBUDDY_SIM_DISPLAY_TYPE="$DISPLAY_TYPE_ARG"
+elif [[ -z "${OVBUDDY_SIM_DISPLAY_TYPE:-}" ]]; then
+    # Try to read from config.json
+    CONFIG_FILE="${DIST_DIR}/config.json"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        DISPLAY_TYPE_FROM_CONFIG=$(grep -o '"display_type"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" 2>/dev/null | grep -o '"[^"]*"' | tail -1 | tr -d '"' || echo "")
+        if [[ -n "$DISPLAY_TYPE_FROM_CONFIG" ]]; then
+            export OVBUDDY_SIM_DISPLAY_TYPE="$DISPLAY_TYPE_FROM_CONFIG"
+        fi
+    fi
+fi
+
+# Set dimensions based on display type (can be overridden by env vars)
+if [[ -z "${OVBUDDY_SIM_WIDTH:-}" ]]; then
+    if [[ "${OVBUDDY_SIM_DISPLAY_TYPE:-eink}" == "lcd" ]]; then
+        export OVBUDDY_SIM_WIDTH=128
+        export OVBUDDY_SIM_HEIGHT=128
+    else
+        export OVBUDDY_SIM_WIDTH=250
+        export OVBUDDY_SIM_HEIGHT=122
+    fi
+elif [[ -z "${OVBUDDY_SIM_HEIGHT:-}" ]]; then
+    # If width is set but height isn't, set height based on display type
+    if [[ "${OVBUDDY_SIM_DISPLAY_TYPE:-eink}" == "lcd" ]]; then
+        export OVBUDDY_SIM_HEIGHT=128
+    else
+        export OVBUDDY_SIM_HEIGHT=122
+    fi
+fi
+
 export OVBUDDY_SIM_PIXEL_DENSITY="${OVBUDDY_SIM_PIXEL_DENSITY:-${OVBUDDY_SIM_SCALE:-3}}"
 export OVBUDDY_SIM_VIEWER="${OVBUDDY_SIM_VIEWER:-1}"
 # Tk often hard-crashes Python on some macOS + system-Python builds.
@@ -68,4 +125,4 @@ if [[ "${OVBUDDY_SIM_VIEWER}" == "1" ]]; then
   VIEWER_PID="$!"
 fi
 
-"${PYTHON_BIN}" ./ovbuddy.py "${DEFAULT_ARGS[@]}" "$@"
+"${PYTHON_BIN}" ./ovbuddy.py "${DEFAULT_ARGS[@]}" ${ARGS[@]+"${ARGS[@]}"}

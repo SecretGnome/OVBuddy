@@ -180,6 +180,7 @@ function loadConfiguration() {
                 departureLayoutSelect.value = data.departure_layout || '1row';
             }
             document.getElementById('destination_scroll').checked = data.destination_scroll || false;
+            document.getElementById('scroll_speed_factor').value = data.scroll_speed_factor || 1.0;
             document.getElementById('lcd_refresh_rate').value = data.lcd_refresh_rate || 30;
             document.getElementById('use_partial_refresh').checked = data.use_partial_refresh || false;
             document.getElementById('auto_update').checked = data.auto_update !== undefined ? data.auto_update : true;
@@ -341,6 +342,7 @@ function saveConfiguration(event) {
         display_orientation: (document.getElementById('display_orientation')?.value || 'bottom'),
         departure_layout: (document.getElementById('departure_layout')?.value || '1row'),
         destination_scroll: document.getElementById('destination_scroll').checked,
+        scroll_speed_factor: parseFloat(document.getElementById('scroll_speed_factor').value) || 1.0,
         lcd_refresh_rate: parseInt(document.getElementById('lcd_refresh_rate').value) || 30,
         use_partial_refresh: document.getElementById('use_partial_refresh').checked,
         auto_update: document.getElementById('auto_update').checked,
