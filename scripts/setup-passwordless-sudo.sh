@@ -83,6 +83,13 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reboot
 ${PI_USER} ALL=(ALL) NOPASSWD: /sbin/reboot
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/sbin/reboot
 
+# Allow timezone configuration
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-timezone *
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl show
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl list-timezones
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-ntp *
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart systemd-timesyncd
+
 # Allow service install script used by updater (copies service units, restarts services)
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/bash /home/pi/ovbuddy/install-service.sh
 ${PI_USER} ALL=(ALL) NOPASSWD: /bin/bash /home/pi/ovbuddy/install-service.sh

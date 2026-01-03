@@ -18,6 +18,15 @@ import shutil
 import textwrap
 import atexit
 from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    ZONEINFO_AVAILABLE = True
+except ImportError:
+    try:
+        from backports.zoneinfo import ZoneInfo
+        ZONEINFO_AVAILABLE = True
+    except ImportError:
+        ZONEINFO_AVAILABLE = False
 
 # Optional imports for web server
 try:
@@ -276,7 +285,7 @@ class TerminalDisplayBackend(DisplayBackend):
 
     def show_pil(self, image, **_kwargs):
         # Terminal backend doesn't render images yet; show a placeholder.
-        self.show_text("OVBuddy", time.strftime("%H:%M"), ["(image screen)"], inverted=False)
+        self.show_text("OVBuddy", get_local_time_str("%H:%M"), ["(image screen)"], inverted=False)
         return None
 
 
@@ -362,6 +371,7 @@ class HardwareEinkBackend(DisplayBackend):
 
     def __init__(self, epd):
         self.epd = epd
+        self.last_image = None  # Store last displayed image for partial refresh diffing
 
     def clear(self, inverted=False):
         try:
@@ -370,14 +380,38 @@ class HardwareEinkBackend(DisplayBackend):
         except Exception:
             pass
 
-    def show_pil(self, image, partial=False, debug_line="", debug_status="", **_kwargs):
-        """Display a PIL image. If partial=True, use partial refresh when available."""
+    def show_pil(self, image, partial=False, burst=False, debug_line="", debug_status="", **_kwargs):
+        """Display a PIL image. If partial=True, use partial refresh when available.
+        If burst=True, perform multiple partial refreshes (5x) for better image quality.
+        
+        For partial refresh, we simply pass the new image to the Waveshare library's
+        displayPartial() method, which handles ghosting and pixel transitions internally.
+        We don't need to do pixel-level diffing - the library is optimized for this.
+        
+        Burst refresh performs 5 partial refreshes in succession to reduce ghosting
+        while still being faster than a full refresh.
+        """
         try:
-            image_buffer = self.epd.getbuffer(image)
-            if partial and hasattr(self.epd, "displayPartial"):
+            # Ensure image is in '1' mode (1-bit monochrome) for eink
+            display_image = image.convert('1') if image.mode != '1' else image
+            
+            if burst and hasattr(self.epd, "displayPartial"):
+                # Burst refresh: multiple partial refreshes for better quality
+                image_buffer = self.epd.getbuffer(display_image)
+                for i in range(5):
+                    self.epd.displayPartial(image_buffer)
+            elif partial and hasattr(self.epd, "displayPartial"):
+                # Use partial refresh - let Waveshare library handle ghosting
+                image_buffer = self.epd.getbuffer(display_image)
                 self.epd.displayPartial(image_buffer)
             else:
+                # Full refresh: use image as-is
+                image_buffer = self.epd.getbuffer(display_image)
                 self.epd.display(image_buffer)
+            
+            # Store the image we just displayed (after orientation mapping)
+            # This is used to determine if we can use partial refresh next time
+            self.last_image = display_image.copy() if display_image else None
         except OSError as e:
             # SPI connection error: attempt to re-init once, then retry full refresh.
             try:
@@ -385,6 +419,8 @@ class HardwareEinkBackend(DisplayBackend):
                 self.epd.init()
                 image_buffer = self.epd.getbuffer(image)
                 self.epd.display(image_buffer)
+                # Store image after successful display
+                self.last_image = image.copy() if image else None
             except Exception as e2:
                 print(f"Failed to reinitialize display: {e2}")
                 raise
@@ -521,9 +557,13 @@ class HardwareLCDBackend(DisplayBackend):
                 print(f"Error displaying image on LCD: {e}")
 
     def sleep(self):
-        # LCD doesn't have a sleep mode like eInk, but we can clear it
+        # LCD doesn't have a sleep mode like eInk
+        # Don't clear on sleep - leave the last displayed content visible
+        # Clearing would show a white screen which is confusing on restart
+        # The display will be properly initialized on next startup
         try:
-            self.clear()
+            # Just ensure the device is in a good state, but don't clear the screen
+            pass
         except Exception:
             pass
 
@@ -607,6 +647,8 @@ def create_display_backend():
             # Common values for ST7735R: h_offset=2, v_offset=3
             serial = spi_serial(port=0, device=0, gpio_DC=25, gpio_RST=27)
             device = st7735(serial, width=128, height=128, rotate=0, h_offset=2, v_offset=3, bgr=True)
+            # Small delay to ensure device is fully initialized after reset
+            time.sleep(0.1)
             return HardwareLCDBackend(device)
         except Exception as e:
             print(f"Warning: failed to initialize LCD display ({e}); using terminal backend.")
@@ -746,17 +788,26 @@ DEFAULT_CONFIG = {
     "display_orientation": "bottom",
     # Legacy boolean; still read/written for backward compatibility.
     "flip_display": False,
+    # Refresh mode: "full" (default, full refresh), "partial" (partial refresh), or "burst" (5x partial refresh)
+    "refresh_mode": "full",
+    # Legacy boolean; still read/written for backward compatibility.
     "use_partial_refresh": False,
     # Departure layout: "1row" (default, single row per connection) or "2row" (two rows per connection)
     "departure_layout": "2row",
-    # Destination scroll: enable scrolling destination text from right to left (LCD only, works in both 1-row and 2-row modes)
+    # Destination scroll: enable scrolling destination text from right to left (LCD, or e-ink with partial refresh; works in both 1-row and 2-row modes)
     "destination_scroll": True,
+    # Force scroll: always scroll destinations even if text fits on display (default False)
+    # When False, scrolling only happens if text is wider than available space
+    "force_scroll": False,
     # Scroll speed factor: multiplier for scrolling speed (0.1-5.0, default 1.0)
     # Higher values scroll faster. All destinations scroll at the same speed.
     "scroll_speed_factor": 1.0,
     # LCD refresh rate (FPS): display refresh rate for LCD screens in frames per second (1-60, default 30)
     # Higher values enable smoother scrolling but use more CPU. Only applies to LCD displays.
     "lcd_refresh_rate": 30,
+    # E-ink partial update interval (seconds): how often to update e-ink display with partial/burst refresh (0.5-20, default 2)
+    # Only applies to e-ink displays with partial or burst refresh mode enabled.
+    "eink_partial_interval": 2.0,
     # Keep this in sync with the web UI footer link + the canonical upstream repo.
     "update_repository_url": "https://github.com/SecretGnome/OVBuddy",
     "auto_update": True,
@@ -790,6 +841,38 @@ def _parse_bool(value, default=False) -> bool:
             return False
     return default
 
+def get_local_time_str(format_str="%H:%M"):
+    """Get current local time as a formatted string, respecting system timezone changes.
+    
+    This function reads the system timezone dynamically to ensure it picks up timezone
+    changes without requiring a process restart. Falls back to datetime.now() if
+    timezone reading fails.
+    """
+    try:
+        # Try to get timezone from system
+        result = subprocess.run(
+            ['timedatectl', 'show', '--property=Timezone', '--value'],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0:
+            timezone_str = result.stdout.strip()
+            if timezone_str and ZONEINFO_AVAILABLE:
+                try:
+                    tz = ZoneInfo(timezone_str)
+                    now = datetime.now(tz)
+                    return now.strftime(format_str)
+                except Exception:
+                    pass  # Fall through to datetime.now()
+    except Exception:
+        pass  # Fall through to datetime.now()
+    
+    # Fallback: use datetime.now() which should respect system timezone
+    # Note: This may not pick up timezone changes until process restart,
+    # but it's better than time.strftime() which definitely won't
+    return datetime.now().strftime(format_str)
+
 # Configuration variables (will be loaded from config.json)
 STATIONS = DEFAULT_CONFIG["stations"]
 LINES = DEFAULT_CONFIG["lines"]
@@ -802,11 +885,14 @@ MAX_DEPARTURES = DEFAULT_CONFIG["max_departures"]
 DISPLAY_TYPE = DEFAULT_CONFIG["display_type"]
 DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
 FLIP_DISPLAY = DEFAULT_CONFIG["flip_display"]  # derived from DISPLAY_ORIENTATION on load/save
-USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
+REFRESH_MODE = DEFAULT_CONFIG["refresh_mode"]
+USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]  # legacy, kept for backward compatibility
 DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
 DESTINATION_SCROLL = DEFAULT_CONFIG["destination_scroll"]
+FORCE_SCROLL = DEFAULT_CONFIG["force_scroll"]
 SCROLL_SPEED_FACTOR = DEFAULT_CONFIG["scroll_speed_factor"]
 LCD_REFRESH_RATE = DEFAULT_CONFIG["lcd_refresh_rate"]
+EINK_PARTIAL_INTERVAL = DEFAULT_CONFIG["eink_partial_interval"]
 UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
 AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
 AP_FALLBACK_ENABLED = DEFAULT_CONFIG["ap_fallback_enabled"]
@@ -964,7 +1050,7 @@ def _apply_default_config():
     """Reset all config globals to DEFAULT_CONFIG (thread-safe; caller holds CONFIG_LOCK)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, REFRESH_MODE, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, FORCE_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, EINK_PARTIAL_INTERVAL, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
 
@@ -979,11 +1065,14 @@ def _apply_default_config():
     DISPLAY_TYPE = DEFAULT_CONFIG["display_type"]
     DISPLAY_ORIENTATION = DEFAULT_CONFIG["display_orientation"]
     FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
+    REFRESH_MODE = DEFAULT_CONFIG["refresh_mode"]
     USE_PARTIAL_REFRESH = DEFAULT_CONFIG["use_partial_refresh"]
     DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
     DESTINATION_SCROLL = DEFAULT_CONFIG["destination_scroll"]
+    FORCE_SCROLL = DEFAULT_CONFIG["force_scroll"]
     SCROLL_SPEED_FACTOR = DEFAULT_CONFIG["scroll_speed_factor"]
     LCD_REFRESH_RATE = DEFAULT_CONFIG["lcd_refresh_rate"]
+    EINK_PARTIAL_INTERVAL = DEFAULT_CONFIG["eink_partial_interval"]
     UPDATE_REPOSITORY_URL = DEFAULT_CONFIG["update_repository_url"]
     AUTO_UPDATE = DEFAULT_CONFIG["auto_update"]
     AP_FALLBACK_ENABLED = DEFAULT_CONFIG["ap_fallback_enabled"]
@@ -998,7 +1087,7 @@ def load_config(force: bool = False):
     """Load configuration from config.json file (unless disabled via web module settings)."""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, REFRESH_MODE, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, FORCE_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, EINK_PARTIAL_INTERVAL, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     global CONFIG_LAST_MODIFIED
@@ -1054,7 +1143,16 @@ def load_config(force: bool = False):
                 DISPLAY_ORIENTATION = "top" if _parse_bool(config.get("flip_display", DEFAULT_CONFIG["flip_display"]), False) else "bottom"
             # Keep legacy boolean in sync
             FLIP_DISPLAY = (DISPLAY_ORIENTATION == "top")
-            USE_PARTIAL_REFRESH = _parse_bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]), DEFAULT_CONFIG["use_partial_refresh"])
+            # Refresh mode: "full", "partial", or "burst"
+            raw_refresh_mode = config.get("refresh_mode", None)
+            if isinstance(raw_refresh_mode, str) and raw_refresh_mode.strip().lower() in ("full", "partial", "burst"):
+                REFRESH_MODE = raw_refresh_mode.strip().lower()
+            else:
+                # Backward compatibility: check use_partial_refresh
+                use_partial = _parse_bool(config.get("use_partial_refresh", DEFAULT_CONFIG["use_partial_refresh"]), DEFAULT_CONFIG["use_partial_refresh"])
+                REFRESH_MODE = "partial" if use_partial else "full"
+            # Keep legacy boolean in sync
+            USE_PARTIAL_REFRESH = (REFRESH_MODE in ("partial", "burst"))
             # Departure layout: "1row" or "2row"
             raw_departure_layout = config.get("departure_layout", DEFAULT_CONFIG["departure_layout"])
             if isinstance(raw_departure_layout, str) and raw_departure_layout.strip().lower() in ("1row", "2row"):
@@ -1062,12 +1160,16 @@ def load_config(force: bool = False):
             else:
                 DEPARTURE_LAYOUT = DEFAULT_CONFIG["departure_layout"]
             DESTINATION_SCROLL = _parse_bool(config.get("destination_scroll", DEFAULT_CONFIG["destination_scroll"]), DEFAULT_CONFIG["destination_scroll"])
+            FORCE_SCROLL = _parse_bool(config.get("force_scroll", DEFAULT_CONFIG["force_scroll"]), DEFAULT_CONFIG["force_scroll"])
             # Scroll speed factor: 0.1-5.0, default 1.0
             raw_scroll_speed = config.get("scroll_speed_factor", DEFAULT_CONFIG["scroll_speed_factor"])
             SCROLL_SPEED_FACTOR = max(0.1, min(5.0, float(raw_scroll_speed))) if isinstance(raw_scroll_speed, (int, float)) else DEFAULT_CONFIG["scroll_speed_factor"]
             # LCD refresh rate: 1-60 FPS, default 30
             raw_lcd_refresh = config.get("lcd_refresh_rate", DEFAULT_CONFIG["lcd_refresh_rate"])
             LCD_REFRESH_RATE = max(1, min(60, int(raw_lcd_refresh))) if isinstance(raw_lcd_refresh, (int, float)) else DEFAULT_CONFIG["lcd_refresh_rate"]
+            # E-ink partial interval: 0.5-20 seconds, default 2
+            raw_eink_interval = config.get("eink_partial_interval", DEFAULT_CONFIG["eink_partial_interval"])
+            EINK_PARTIAL_INTERVAL = max(0.5, min(20.0, float(raw_eink_interval))) if isinstance(raw_eink_interval, (int, float)) else DEFAULT_CONFIG["eink_partial_interval"]
             UPDATE_REPOSITORY_URL = config.get("update_repository_url", DEFAULT_CONFIG["update_repository_url"])
             AUTO_UPDATE = _parse_bool(config.get("auto_update", DEFAULT_CONFIG["auto_update"]), DEFAULT_CONFIG["auto_update"])
             AP_FALLBACK_ENABLED = _parse_bool(config.get("ap_fallback_enabled", DEFAULT_CONFIG["ap_fallback_enabled"]), DEFAULT_CONFIG["ap_fallback_enabled"])
@@ -1107,11 +1209,14 @@ def save_config():
             "display_type": DISPLAY_TYPE,
             "display_orientation": DISPLAY_ORIENTATION,
             "flip_display": (DISPLAY_ORIENTATION == "top"),
-            "use_partial_refresh": USE_PARTIAL_REFRESH,
+            "refresh_mode": REFRESH_MODE,
+            "use_partial_refresh": USE_PARTIAL_REFRESH,  # legacy, kept for backward compatibility
             "departure_layout": DEPARTURE_LAYOUT,
             "destination_scroll": DESTINATION_SCROLL,
+            "force_scroll": FORCE_SCROLL,
             "scroll_speed_factor": SCROLL_SPEED_FACTOR,
             "lcd_refresh_rate": LCD_REFRESH_RATE,
+            "eink_partial_interval": EINK_PARTIAL_INTERVAL,
             "update_repository_url": UPDATE_REPOSITORY_URL,
             "ap_fallback_enabled": AP_FALLBACK_ENABLED,
             "ap_ssid": AP_SSID,
@@ -1154,9 +1259,14 @@ def get_config_dict():
             "display_type": DISPLAY_TYPE,
             "display_orientation": DISPLAY_ORIENTATION,
             "flip_display": (DISPLAY_ORIENTATION == "top"),
-            "use_partial_refresh": USE_PARTIAL_REFRESH,
+            "refresh_mode": REFRESH_MODE,
+            "use_partial_refresh": USE_PARTIAL_REFRESH,  # legacy, kept for backward compatibility
             "departure_layout": DEPARTURE_LAYOUT,
             "destination_scroll": DESTINATION_SCROLL,
+            "force_scroll": FORCE_SCROLL,
+            "scroll_speed_factor": SCROLL_SPEED_FACTOR,
+            "lcd_refresh_rate": LCD_REFRESH_RATE,
+            "eink_partial_interval": EINK_PARTIAL_INTERVAL,
             "update_repository_url": UPDATE_REPOSITORY_URL,
             "auto_update": AUTO_UPDATE,
             "ap_fallback_enabled": AP_FALLBACK_ENABLED,
@@ -1172,7 +1282,7 @@ def update_config(new_config):
     """Update configuration from a dictionary (thread-safe)"""
     global STATIONS, LINES, REFRESH_INTERVAL, QR_CODE_DISPLAY_DURATION
     global DESTINATION_PREFIXES_TO_REMOVE, DESTINATION_EXCEPTIONS
-    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, UPDATE_REPOSITORY_URL, AUTO_UPDATE
+    global INVERTED, MAX_DEPARTURES, DISPLAY_TYPE, DISPLAY_ORIENTATION, FLIP_DISPLAY, REFRESH_MODE, USE_PARTIAL_REFRESH, DEPARTURE_LAYOUT, DESTINATION_SCROLL, FORCE_SCROLL, SCROLL_SPEED_FACTOR, LCD_REFRESH_RATE, EINK_PARTIAL_INTERVAL, UPDATE_REPOSITORY_URL, AUTO_UPDATE
     global AP_FALLBACK_ENABLED, AP_SSID, AP_PASSWORD, DISPLAY_AP_PASSWORD
     global LAST_WIFI_SSID, LAST_WIFI_PASSWORD, KNOWN_WIFIS
     
@@ -1211,20 +1321,33 @@ def update_config(new_config):
         if "flip_display" in new_config and "display_orientation" not in new_config:
             FLIP_DISPLAY = _parse_bool(new_config["flip_display"], FLIP_DISPLAY)
             DISPLAY_ORIENTATION = "top" if FLIP_DISPLAY else "bottom"
-        if "use_partial_refresh" in new_config:
+        # Refresh mode: "full", "partial", or "burst"
+        if "refresh_mode" in new_config and isinstance(new_config["refresh_mode"], str):
+            rm = new_config["refresh_mode"].strip().lower()
+            if rm in ("full", "partial", "burst"):
+                REFRESH_MODE = rm
+                USE_PARTIAL_REFRESH = (REFRESH_MODE in ("partial", "burst"))
+        # Backward compat: use_partial_refresh updates refresh_mode if provided
+        elif "use_partial_refresh" in new_config:
             USE_PARTIAL_REFRESH = _parse_bool(new_config["use_partial_refresh"], USE_PARTIAL_REFRESH)
+            REFRESH_MODE = "partial" if USE_PARTIAL_REFRESH else "full"
         if "departure_layout" in new_config and isinstance(new_config["departure_layout"], str):
             dl = new_config["departure_layout"].strip().lower()
             if dl in ("1row", "2row"):
                 DEPARTURE_LAYOUT = dl
         if "destination_scroll" in new_config:
             DESTINATION_SCROLL = _parse_bool(new_config["destination_scroll"], DESTINATION_SCROLL)
+        if "force_scroll" in new_config:
+            FORCE_SCROLL = _parse_bool(new_config["force_scroll"], FORCE_SCROLL)
         if "scroll_speed_factor" in new_config:
             raw_scroll_speed = new_config["scroll_speed_factor"]
             SCROLL_SPEED_FACTOR = max(0.1, min(5.0, float(raw_scroll_speed))) if isinstance(raw_scroll_speed, (int, float)) else SCROLL_SPEED_FACTOR
         if "lcd_refresh_rate" in new_config:
             raw_lcd_refresh = new_config["lcd_refresh_rate"]
             LCD_REFRESH_RATE = max(1, min(60, int(raw_lcd_refresh))) if isinstance(raw_lcd_refresh, (int, float)) else LCD_REFRESH_RATE
+        if "eink_partial_interval" in new_config:
+            raw_eink_interval = new_config["eink_partial_interval"]
+            EINK_PARTIAL_INTERVAL = max(0.5, min(20.0, float(raw_eink_interval))) if isinstance(raw_eink_interval, (int, float)) else EINK_PARTIAL_INTERVAL
         if "update_repository_url" in new_config:
             UPDATE_REPOSITORY_URL = str(new_config["update_repository_url"])
         if "auto_update" in new_config:
@@ -1258,6 +1381,20 @@ def _create_config_reload_trigger():
         return True
     except Exception as e:
         print(f"Warning: Could not create config reload trigger file: {e}")
+        return False
+
+def _create_refresh_trigger():
+    """Create a trigger file to signal the main service to immediately refresh the display"""
+    try:
+        # Use the script directory (same as config file)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        trigger_file = os.path.join(script_dir, ".refresh_trigger")
+        # Create an empty file to signal refresh
+        with open(trigger_file, 'w') as f:
+            f.write("")
+        return True
+    except Exception as e:
+        print(f"Warning: Could not create refresh trigger file: {e}")
         return False
 
 # --------------------------
@@ -2207,7 +2344,13 @@ def _extract_line_color(entry):
     Checks multiple possible fields from API first, then falls back to line_colors.json.
     
     Returns RGB tuple (r, g, b) or None if not found.
+    
+    For eink displays, always returns None since they are monochrome.
     """
+    # Skip color extraction entirely for eink displays (monochrome only)
+    if DISPLAY_TYPE == "eink":
+        return None
+    
     # Try direct color fields from API
     color = entry.get('color') or entry.get('fgColor')
     if color:
@@ -2497,11 +2640,12 @@ def render_qr_code(display=None, test_mode=False):
             if ip:
                 lines.append(ip)
         lines.extend(["", "Scan QR (device) or open URL", f"v{VERSION}"])
-        display.show_text("OVBuddy", time.strftime("%H:%M"), lines, inverted=INVERTED)
+        display.show_text("OVBuddy", get_local_time_str("%H:%M"), lines, inverted=INVERTED)
         return
 
     # Portrait orientations: render a simple text-only "how to reach web UI" screen.
-    if _is_portrait_orientation():
+    # Exception: eInk displays in portrait mode should use LCD layout (centered vertical) instead
+    if _is_portrait_orientation() and DISPLAY_TYPE != "eink":
         try:
             bg_color = 0 if INVERTED else 255
             fg_color = 255 if INVERTED else 0
@@ -2565,7 +2709,10 @@ def render_qr_code(display=None, test_mode=False):
 
         qr_modules = len(qr_matrix)
         side = (qr_modules + border * 2) * qr_scale
-        qr_image = Image.new("1", (side, side), 1)  # 1=white in mode '1'
+        # When INVERTED, swap QR code colors so final appearance is correct
+        qr_bg = 0 if INVERTED else 1  # background: black if inverted, white if normal
+        qr_fg = 1 if INVERTED else 0  # foreground: white if inverted, black if normal
+        qr_image = Image.new("1", (side, side), qr_bg)
         qr_draw = ImageDraw.Draw(qr_image)
         for y, row in enumerate(qr_matrix):
             if not isinstance(row, (list, tuple)):
@@ -2576,7 +2723,7 @@ def render_qr_code(display=None, test_mode=False):
                     y0 = (y + border) * qr_scale
                     qr_draw.rectangle(
                         (x0, y0, x0 + qr_scale - 1, y0 + qr_scale - 1),
-                        fill=0,  # black
+                        fill=qr_fg,
                     )
         
         # Get display dimensions
@@ -2612,7 +2759,14 @@ def render_qr_code(display=None, test_mode=False):
                     ip = wifi_status["ip"]
         
         # Choose layout based on display type
-        if DISPLAY_TYPE == "lcd" or display_width <= 128:
+        # Use LCD layout (centered vertical) for:
+        # - LCD displays
+        # - Small displays (width <= 128)
+        # - eInk displays in portrait orientation (left/right)
+        use_lcd_layout = (DISPLAY_TYPE == "lcd" or display_width <= 128 or 
+                          (DISPLAY_TYPE == "eink" and _is_portrait_orientation()))
+        
+        if use_lcd_layout:
             # CENTERED VERTICAL LAYOUT for LCD/square displays: QR code at top, text below, all centered
             
             # Build text lines (will be displayed below QR code)
@@ -2868,7 +3022,7 @@ def render_loading_screen(display=None, test_mode=False):
     if display is None:
         display = TerminalDisplayBackend()
     if not getattr(display, "supports_pil", False):
-        display.show_text("OVBuddy", time.strftime("%H:%M"), ["Starting...", ""], inverted=INVERTED)
+        display.show_text("OVBuddy", get_local_time_str("%H:%M"), ["Starting...", ""], inverted=INVERTED)
         return
     
     try:
@@ -2937,7 +3091,7 @@ def render_ap_info(ssid, password=None, display_password=False, display=None, te
             f"PWD: {safe_ascii(pwd)}",
             "URL: http://192.168.4.1:8080",
         ]
-        display.show_text("OVBuddy", time.strftime("%H:%M"), lines, inverted=INVERTED)
+        display.show_text("OVBuddy", get_local_time_str("%H:%M"), lines, inverted=INVERTED)
         return
 
     # Portrait orientations: keep it simple and readable (text-only).
@@ -3106,7 +3260,7 @@ def render_update_screen(display=None, status="Updating...", version=None, test_
         display = TerminalDisplayBackend()
     if not getattr(display, "supports_pil", False):
         msg = f"Updating to v{version}..." if version else ""
-        display.show_text("Update", time.strftime("%H:%M"), [status, "", msg], inverted=INVERTED)
+        display.show_text("Update", get_local_time_str("%H:%M"), [status, "", msg], inverted=INVERTED)
         return
     
     try:
@@ -3176,7 +3330,7 @@ def render_action_screen(display=None, title="Action", message="", test_mode=Fal
     if display is None:
         display = TerminalDisplayBackend()
     if not getattr(display, "supports_pil", False):
-        display.show_text(str(title), time.strftime("%H:%M"), [str(message)], inverted=INVERTED)
+        display.show_text(str(title), get_local_time_str("%H:%M"), [str(message)], inverted=INVERTED)
         return
     try:
         bg_color = 0 if INVERTED else 255
@@ -3264,7 +3418,9 @@ def format_configuration():
         display_settings.append(f"Ports:{DISPLAY_ORIENTATION}")
     if INVERTED:
         display_settings.append("Inverted")
-    if USE_PARTIAL_REFRESH:
+    if REFRESH_MODE == "burst":
+        display_settings.append("Burst")
+    elif REFRESH_MODE == "partial":
         display_settings.append("Partial")
     if display_settings:
         lines.append(f"Display: {', '.join(display_settings)}")
@@ -3303,7 +3459,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
 
     # Text-only backends (terminal) render without PIL.
     if not getattr(display, "supports_pil", False):
-        now_str = time.strftime("%H:%M")
+        now_str = get_local_time_str("%H:%M")
         cols = shutil.get_terminal_size(fallback=(80, 24)).columns
         w = min(max(48, cols - 2), 90)
         inner_w = w - 2
@@ -3512,7 +3668,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         draw.text((0, 0), header_text, font=font_header, fill=fg_color)
     
     # Always show update time in top right corner
-    current_time = time.strftime("%H:%M")
+    current_time = get_local_time_str("%H:%M")
     # Get actual text width using textbbox (more accurate)
     try:
         bbox = draw.textbbox((0, 0), current_time, font=font_header)
@@ -3562,9 +3718,11 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         # Check if 2-row layout is enabled (works for both portrait and landscape)
         use_2row_layout = (DEPARTURE_LAYOUT == "2row")
         
-        # Update global scroll offset for all destinations (LCD only)
+        # Update global scroll offset for all destinations (LCD, or e-ink with partial refresh)
         # All destinations scroll together at the same speed
-        if DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL:
+        scroll_needs_update = ((DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL) or 
+                              (DISPLAY_TYPE == "eink" and USE_PARTIAL_REFRESH and DESTINATION_SCROLL))
+        if scroll_needs_update:
             with _DESTINATION_SCROLL_LOCK:
                 # Update global scroll offset based on speed factor
                 # Base speed is 2 pixels per frame, multiplied by speed factor
@@ -3582,7 +3740,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
             
             if use_2row_layout:
                 # Two-row layout (works for both eInk and LCD displays):
-                # Row 1: [LineNumber|left] [Departure Time + Delay|right]
+                # Row 1: [LineNumber|left] [Departure Time|right, with Delay below time in smaller font]
                 # Row 2: [Destination|full width, left aligned]
                 y = 14
                 row_height = max(16, line_height + 2)  # Space for two rows per connection
@@ -3595,35 +3753,23 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     dest_raw = entry.get("to", "")
                     dest = safe_ascii(clean_destination_name(dest_raw))
                     
-                    # Extract line color and use as background
-                    line_color_rgb = _extract_line_color(entry)
+                    # Extract line color and use as background (LCD only, skip for eink)
+                    line_color_rgb = _extract_line_color(entry) if DISPLAY_TYPE == "lcd" else None
                     row_bottom = y + (row_height * 2) + 2  # Both rows plus spacing
                     
                     if line_color_rgb:
-                        # Draw background rectangle with line color
-                        # For monochrome displays, convert to grayscale
-                        if image.mode == '1' or image.mode == 'L':
-                            # Convert RGB to grayscale (luminance formula)
-                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
-                            bg_color = gray if not INVERTED else (255 - gray)
-                        else:
-                            # RGB mode (LCD)
-                            bg_color = line_color_rgb
+                        # Draw background rectangle with line color (LCD only)
+                        bg_color = line_color_rgb
                         
                         # Draw background for both rows
                         draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color)
                         
                         # Adjust text color for readability on colored background
                         # Use white text if background is dark, black if light
-                        if image.mode == 'RGB':
-                            # For color displays, determine if background is light or dark
-                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
-                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
-                        else:
-                            # For monochrome, use inverted foreground color
-                            text_color = bg_color if INVERTED else (255 - bg_color if isinstance(bg_color, int) else fg_color)
+                        luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                        text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
                     else:
-                        # No color available, use default
+                        # No color available (eink or no color data), use default
                         text_color = fg_color
                     
                     # Row 1: LineNumber (left) and Departure time + Delay (right)
@@ -3658,38 +3804,39 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         # eInk or no color: use default text color
                         draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
                     
-                    # Build right side: time + delay (if present)
-                    right_text = time_str
-                    if delay_str:
-                        right_text = time_str + " " + delay_str
-                    
-                    # Measure right side text width for right alignment
+                    # Measure time width for right alignment
                     try:
-                        # Measure time with regular font
                         bbox_time = draw.textbbox((0, 0), time_str, font=font_line)
                         time_w = bbox_time[2] - bbox_time[0]
-                        # Measure delay with smaller font if present
-                        delay_w = 0
-                        if delay_str:
-                            bbox_delay = draw.textbbox((0, 0), " " + delay_str, font=font_delay)
-                            delay_w = bbox_delay[2] - bbox_delay[0]
-                        total_w = time_w + delay_w
                     except Exception:
                         time_w = len(time_str) * 6
-                        delay_w = (len(" " + delay_str) * 5) if delay_str else 0  # Smaller font = smaller char width
-                        total_w = time_w + delay_w
                     
-                    # Draw time
-                    draw.text((w - total_w - 4, y), time_str, font=font_line, fill=text_color)
-                    # Draw delay with smaller font if present
+                    # Draw time (right-aligned)
+                    draw.text((w - time_w - 4, y), time_str, font=font_line, fill=text_color)
+                    
+                    # Draw delay below the time with smaller font (right-aligned)
                     if delay_str:
-                        draw.text((w - delay_w - 4, y), " " + delay_str, font=font_delay, fill=text_color)
+                        try:
+                            bbox_delay = draw.textbbox((0, 0), delay_str, font=font_delay)
+                            delay_w = bbox_delay[2] - bbox_delay[0]
+                        except Exception:
+                            delay_w = len(delay_str) * 5  # Smaller font = smaller char width
+                        # Position delay below the time, right-aligned
+                        # Get time text height to position delay appropriately
+                        try:
+                            bbox_time_height = draw.textbbox((0, 0), time_str, font=font_line)
+                            time_h = bbox_time_height[3] - bbox_time_height[1]
+                        except Exception:
+                            time_h = 12  # Fallback height
+                        delay_y = y + time_h + 4  # Position lower below the time text (2-row layout)
+                        draw.text((w - delay_w - 4, delay_y), delay_str, font=font_delay, fill=text_color)
                     
                     y += row_height
                     
                     # Row 2: Destination (full width, left aligned)
-                    # Check if scrolling is enabled (LCD + destination_scroll)
-                    scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
+                    # Check if scrolling is enabled (LCD + destination_scroll, or e-ink with partial refresh + destination_scroll)
+                    scroll_enabled = ((DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL) or 
+                                     (DISPLAY_TYPE == "eink" and USE_PARTIAL_REFRESH and DESTINATION_SCROLL))
                     
                     if scroll_enabled:
                         # Measure destination text width
@@ -3701,8 +3848,8 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         
                         available_width = w - 8  # Full width minus margins
                         
-                        # Only scroll if destination is wider than available space
-                        if dest_w > available_width:
+                        # Scroll if destination is wider than available space, or if force_scroll is enabled
+                        if dest_w > available_width or FORCE_SCROLL:
                             # Use global scroll offset for synchronized scrolling
                             # All destinations use the same offset, so they scroll at the same speed
                             with _DESTINATION_SCROLL_LOCK:
@@ -3735,36 +3882,45 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     line_num = format_line_number(entry).strip()
                     time_str = entry["stop"]["departure"][11:16]
                     delay_str = _format_delay_suffix(entry, for_terminal=False)
-                    right_text = time_str + (f" {delay_str}" if delay_str else "")
+                    dest_raw = entry.get("to", "")
+                    dest = safe_ascii(clean_destination_name(dest_raw))
 
-                    # Extract line color and use as background
-                    line_color_rgb = _extract_line_color(entry)
-                    row_height_1row = max(18, line_height + 4)
+                    # Extract line color and use as background (LCD only, skip for eink)
+                    line_color_rgb = _extract_line_color(entry) if DISPLAY_TYPE == "lcd" else None
+                    # Increase row height to accommodate delay below time
+                    row_height_1row = max(22, line_height + 8) if delay_str else max(18, line_height + 4)
                     row_bottom = y + row_height_1row
                     
                     if line_color_rgb:
-                        if image.mode == '1' or image.mode == 'L':
-                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
-                            bg_color = gray if not INVERTED else (255 - gray)
-                        else:
-                            bg_color = line_color_rgb
-                        
+                        # LCD only: draw background rectangle with line color
+                        bg_color = line_color_rgb
                         draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color)
                         
-                        if image.mode == 'RGB':
-                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
-                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
-                        else:
-                            text_color = bg_color if INVERTED else (255 - bg_color if isinstance(bg_color, int) else fg_color)
+                        # Adjust text color for readability on colored background
+                        luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                        text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
                     else:
+                        # No color available (eink or no color data), use default
                         text_color = fg_color
 
-                    # Measure right text for alignment
+                    # Measure time width for right alignment
                     try:
-                        bbox = draw.textbbox((0, 0), right_text, font=font_line_bold)
-                        right_w = bbox[2] - bbox[0]
+                        bbox_time = draw.textbbox((0, 0), time_str, font=font_line)
+                        time_w = bbox_time[2] - bbox_time[0]
                     except Exception:
-                        right_w = len(right_text) * 6
+                        time_w = len(time_str) * 6
+
+                    # Measure delay width
+                    delay_w = 0
+                    if delay_str:
+                        try:
+                            bbox_delay = draw.textbbox((0, 0), delay_str, font=font_delay)
+                            delay_w = bbox_delay[2] - bbox_delay[0]
+                        except Exception:
+                            delay_w = len(delay_str) * 5
+                    
+                    time_delay_width = time_w + delay_w
+                    time_x = max(40, w - time_w - 4)  # Right edge of time
 
                     # For LCD displays, draw line number with its color if available
                     if DISPLAY_TYPE == "lcd" and line_color_rgb:
@@ -3787,8 +3943,74 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     else:
                         # eInk or no color: use default text color
                         draw.text((4, y), line_num, font=font_line_bold, fill=text_color)
-                    draw.text((max(40, w - right_w - 4), y), right_text, font=font_line, fill=text_color)
-                    y += max(18, line_height + 4)
+                    
+                    # Calculate line number end position
+                    try:
+                        bbox_line = draw.textbbox((4, y), line_num, font=font_line_bold)
+                        line_num_w = bbox_line[2] - bbox_line[0]
+                    except Exception:
+                        line_num_w = len(line_num) * 8
+                    line_num_end = 4 + line_num_w + 4  # Line number end + spacing
+                    dest_x = line_num_end  # Destination starts after line number
+                    
+                    # Check if scrolling is enabled (LCD + destination_scroll, or e-ink with partial refresh + destination_scroll)
+                    scroll_enabled = ((DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL) or 
+                                     (DISPLAY_TYPE == "eink" and USE_PARTIAL_REFRESH and DESTINATION_SCROLL))
+                    
+                    # Draw destination with scrolling support (for LCD in portrait 1row mode)
+                    if scroll_enabled:
+                        # Measure destination text width
+                        try:
+                            bbox = draw.textbbox((0, 0), dest, font=font_line)
+                            dest_w = bbox[2] - bbox[0]
+                        except Exception:
+                            dest_w = len(dest) * 6
+                        
+                        # Calculate available width between line number and time/delay
+                        available_width = time_x - dest_x - time_delay_width - 5
+                        
+                        # Scroll if destination is wider than available space, or if force_scroll is enabled
+                        if dest_w > available_width or FORCE_SCROLL:
+                            # Use global scroll offset for synchronized scrolling (same pattern as 2row mode)
+                            with _DESTINATION_SCROLL_LOCK:
+                                scroll_x = _DESTINATION_SCROLL_OFFSET + available_width
+                                # Wrap around when this destination's text is fully off-screen to the left
+                                wrap_cycle = dest_w + available_width
+                                if scroll_x < -dest_w:
+                                    # Wrap to start position
+                                    scroll_x = scroll_x % wrap_cycle
+                                    if scroll_x < -dest_w:
+                                        scroll_x += wrap_cycle
+                            
+                            # Draw destination at scroll position
+                            draw.text((dest_x + scroll_x, y), dest, font=font_line, fill=text_color)
+                        else:
+                            # Text fits, no scrolling needed
+                            draw.text((dest_x, y), dest, font=font_line, fill=text_color)
+                    else:
+                        # No scrolling - truncate if needed
+                        dest_max_width = time_x - dest_x - time_delay_width - 5
+                        dest_max_chars = max(1, int(dest_max_width / 6) - 2)
+                        if len(dest) > dest_max_chars:
+                            dest = dest[:dest_max_chars - 3] + "..."
+                        draw.text((dest_x, y), dest, font=font_line, fill=text_color)
+                    
+                    # Draw time (right-aligned)
+                    draw.text((time_x, y), time_str, font=font_line, fill=text_color)
+                    
+                    # Draw delay below the time with smaller font (right-aligned)
+                    if delay_str:
+                        # Position delay below the time, right-aligned (closer to time for 1-row layout)
+                        # Get time text height to position delay closer to the time
+                        try:
+                            bbox_time_height = draw.textbbox((0, 0), time_str, font=font_line)
+                            time_h = bbox_time_height[3] - bbox_time_height[1]
+                        except Exception:
+                            time_h = 12  # Fallback height
+                        delay_y = y + time_h + 1  # Position closer to the time text (1-row layout)
+                        draw.text((max(40, w - delay_w - 4), delay_y), delay_str, font=font_delay, fill=text_color)
+                    
+                    y += row_height_1row
                     if y >= h - 10:
                         break
         else:
@@ -3807,26 +4029,20 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     dest_raw = entry.get("to", "")
                     dest = safe_ascii(clean_destination_name(dest_raw))
                     
-                    # Extract line color and use as background
-                    line_color_rgb = _extract_line_color(entry)
+                    # Extract line color and use as background (LCD only, skip for eink)
+                    line_color_rgb = _extract_line_color(entry) if DISPLAY_TYPE == "lcd" else None
                     row_bottom = y + (row_height * 2) + 2  # Both rows plus spacing
                     
                     if line_color_rgb:
-                        # Draw background rectangle with line color
-                        if image.mode == '1' or image.mode == 'L':
-                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
-                            bg_color = gray if not INVERTED else (255 - gray)
-                        else:
-                            bg_color = line_color_rgb
-                        
+                        # LCD only: draw background rectangle with line color
+                        bg_color = line_color_rgb
                         draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color)
                         
-                        if image.mode == 'RGB':
-                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
-                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
-                        else:
-                            text_color = bg_color if INVERTED else (255 - bg_color if isinstance(bg_color, int) else fg_color)
+                        # Adjust text color for readability on colored background
+                        luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                        text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
                     else:
+                        # No color available (eink or no color data), use default
                         text_color = fg_color
                     
                     # Row 1: LineNumber (left) and Departure time + Delay (right)
@@ -3889,8 +4105,9 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     y += row_height
                     
                     # Row 2: Destination (full width, left aligned)
-                    # Check if scrolling is enabled (LCD + destination_scroll)
-                    scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
+                    # Check if scrolling is enabled (LCD + destination_scroll, or e-ink with partial refresh + destination_scroll)
+                    scroll_enabled = ((DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL) or 
+                                     (DISPLAY_TYPE == "eink" and USE_PARTIAL_REFRESH and DESTINATION_SCROLL))
                     
                     if scroll_enabled:
                         # Measure destination text width
@@ -3902,8 +4119,8 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         
                         available_width = w - 4  # Full width minus margins
                         
-                        # Only scroll if destination is wider than available space
-                        if dest_w > available_width:
+                        # Scroll if destination is wider than available space, or if force_scroll is enabled
+                        if dest_w > available_width or FORCE_SCROLL:
                             # Use global scroll offset for synchronized scrolling
                             # All destinations use the same offset, so they scroll at the same speed
                             with _DESTINATION_SCROLL_LOCK:
@@ -3955,29 +4172,31 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     dest = safe_ascii(clean_destination_name(dest_raw))  # Clean and convert to ASCII
                     time_str = entry["stop"]["departure"][11:16]  # HH:MM
                     
-                    # Extract line color and use as background
-                    line_color_rgb = _extract_line_color(entry)
+                    # Extract line color and use as background (LCD only, skip for eink)
+                    line_color_rgb = _extract_line_color(entry) if DISPLAY_TYPE == "lcd" else None
                     row_bottom = y + line_spacing
                     
                     if line_color_rgb:
-                        if image.mode == '1' or image.mode == 'L':
-                            gray = int(0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2])
-                            bg_color_row = gray if not INVERTED else (255 - gray)
-                        else:
-                            bg_color_row = line_color_rgb
-                        
+                        # LCD only: draw background rectangle with line color
+                        bg_color_row = line_color_rgb
                         draw.rectangle([(0, y), (w, row_bottom)], fill=bg_color_row)
                         
-                        if image.mode == 'RGB':
-                            luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
-                            text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
-                        else:
-                            text_color = bg_color_row if INVERTED else (255 - bg_color_row if isinstance(bg_color_row, int) else fg_color)
+                        # Adjust text color for readability on colored background
+                        luminance = 0.299 * line_color_rgb[0] + 0.587 * line_color_rgb[1] + 0.114 * line_color_rgb[2]
+                        text_color = (0, 0, 0) if luminance > 128 else (255, 255, 255)
                     else:
+                        # No color available (eink or no color data), use default
                         text_color = fg_color
                     
                     # Delay suffix (minutes)
                     delay_str = _format_delay_suffix(entry, for_terminal=False)
+                    
+                    # Measure line number width to prevent destination overlap
+                    try:
+                        bbox = draw.textbbox((0, 0), line_num, font=font_line)
+                        line_num_width = bbox[2] - bbox[0]
+                    except Exception:
+                        line_num_width = 3 * char_width  # Line number is always 3 chars
                     
                     # Measure time + delay widths
                     try:
@@ -3996,8 +4215,9 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                     
                     time_delay_width = time_width + delay_width
                     
-                    # Check if scrolling is enabled (LCD only)
-                    scroll_enabled = (DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL)
+                    # Check if scrolling is enabled (LCD + destination_scroll, or e-ink with partial refresh + destination_scroll)
+                    scroll_enabled = ((DISPLAY_TYPE == "lcd" and DESTINATION_SCROLL) or 
+                                     (DISPLAY_TYPE == "eink" and USE_PARTIAL_REFRESH and DESTINATION_SCROLL))
                     
                     if scroll_enabled:
                         # Measure destination text width
@@ -4007,19 +4227,23 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
                         except Exception:
                             dest_w = len(dest) * char_width
                         
-                        available_width = time_x - dest_x - time_delay_width - 5
+                        # Calculate available width between line number and time/delay
+                        # Leave some spacing after line number (2 char widths)
+                        line_num_end = line_num_width + (2 * char_width)
+                        available_width = time_x - line_num_end - time_delay_width - 5
                         
-                        # Only scroll if destination is wider than available space
-                        if dest_w > available_width:
-                            # Use global scroll offset for synchronized scrolling
-                            # All destinations use the same offset, so they scroll at the same speed
+                        # Scroll if destination is wider than available space, or if force_scroll is enabled
+                        if dest_w > available_width or FORCE_SCROLL:
+                            # Use global scroll offset for synchronized scrolling (same pattern as 2row mode)
                             with _DESTINATION_SCROLL_LOCK:
                                 scroll_x = _DESTINATION_SCROLL_OFFSET + available_width
                                 # Wrap around when this destination's text is fully off-screen to the left
                                 wrap_cycle = dest_w + available_width
-                                while scroll_x < -dest_w:
-                                    # Wrap to start position (text fully off-screen to the right)
-                                    scroll_x += wrap_cycle
+                                if scroll_x < -dest_w:
+                                    # Wrap to start position
+                                    scroll_x = scroll_x % wrap_cycle
+                                    if scroll_x < -dest_w:
+                                        scroll_x += wrap_cycle
                             
                             # Draw: line, destination (scrolled), time, delay
                             draw.text((line_num_x, y), line_num, font=font_line, fill=text_color)
@@ -4071,7 +4295,7 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
     image = _apply_display_orientation(image)
 
     # Debug: log what we're displaying
-    current_time = time.strftime("%H:%M:%S")
+    current_time = get_local_time_str("%H:%M:%S")
     debug_line = ""
     debug_status = ""
     if departures:
@@ -4083,13 +4307,19 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         debug_status = (safe_ascii(str(error_msg)) if error_msg else "No departures")
         print(f"[{current_time}] Updating display: {debug_status}")
 
-    # Determine refresh type based on state (same logic as before)
+    # Determine refresh type based on state and refresh mode
     has_error = error_msg is not None
     use_partial = (USE_PARTIAL_REFRESH and
                    (not is_first_successful) and
                    (not has_error) and
                    last_was_successful)
-    if use_partial:
+    
+    # Determine if we should use burst mode
+    use_burst = (REFRESH_MODE == "burst" and use_partial)
+    
+    if use_burst:
+        print("Using burst refresh (5x partial)")
+    elif use_partial:
         print("Using partial refresh")
     else:
         reason = []
@@ -4100,11 +4330,11 @@ def render_board(departures, display=None, error_msg=None, is_first_successful=F
         if not last_was_successful and not has_error:
             reason.append("switching from error to success")
         if not USE_PARTIAL_REFRESH:
-            reason.append("partial refresh disabled")
+            reason.append("partial/burst refresh disabled")
         if reason:
             print(f"Using full refresh: {', '.join(reason)}")
 
-    display.show_pil(image, partial=use_partial, debug_line=debug_line, debug_status=debug_status, inverted=INVERTED)
+    display.show_pil(image, partial=use_partial, burst=use_burst, debug_line=debug_line, debug_status=debug_status, inverted=INVERTED)
 
 # --------------------------
 # WIFI MANAGEMENT
@@ -4714,8 +4944,9 @@ if FLASK_AVAILABLE:
                 # Trigger config reload in main loop (if running in same process)
                 global config_reload_needed
                 config_reload_needed = True
-                # Also create trigger file for inter-process communication
+                # Also create trigger files for inter-process communication
                 _create_config_reload_trigger()
+                _create_refresh_trigger()  # Force immediate refresh to show new config
                 return jsonify({"success": True})
             else:
                 return jsonify({"success": False, "error": "Failed to save configuration"}), 500
@@ -4726,8 +4957,9 @@ if FLASK_AVAILABLE:
     def reload_config():
         """Trigger a config reload in the main service"""
         try:
-            # Create trigger file for main service to pick up
+            # Create trigger files for main service to pick up
             _create_config_reload_trigger()
+            _create_refresh_trigger()  # Force immediate refresh to show new config
             # Also reload in this process if config is available
             load_config(force=True)
             global config_reload_needed
@@ -5265,6 +5497,101 @@ if FLASK_AVAILABLE:
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @app.route('/api/timezone', methods=['GET'])
+    def get_timezone():
+        """Get current system timezone"""
+        try:
+            load_web_settings()
+            if not _is_module_enabled("shutdown"):
+                return jsonify({"success": False, "error": "shutdown module is disabled"}), 404
+            
+            # Get current timezone using timedatectl
+            result = subprocess.run(
+                ['timedatectl', 'show', '--property=Timezone', '--value'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                timezone = result.stdout.strip()
+                # Also get available timezones for the UI
+                list_result = subprocess.run(
+                    ['timedatectl', 'list-timezones'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                available_timezones = []
+                if list_result.returncode == 0:
+                    available_timezones = [tz.strip() for tz in list_result.stdout.strip().split('\n') if tz.strip()]
+                
+                return jsonify({
+                    "success": True,
+                    "timezone": timezone,
+                    "available_timezones": available_timezones[:500]  # Limit to first 500 for performance
+                })
+            else:
+                return jsonify({"success": False, "error": "Failed to get timezone"}), 500
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route('/api/timezone', methods=['POST'])
+    def set_timezone():
+        """Set system timezone"""
+        try:
+            load_web_settings()
+            if not _is_module_enabled("shutdown"):
+                return jsonify({"success": False, "error": "shutdown module is disabled"}), 404
+            
+            data = request.get_json() or {}
+            timezone = data.get('timezone', '').strip()
+            
+            if not timezone:
+                return jsonify({"success": False, "error": "Timezone is required"}), 400
+            
+            # Validate timezone format (basic check - should be like Europe/Zurich, America/New_York, etc.)
+            if '/' not in timezone or len(timezone) < 3:
+                return jsonify({"success": False, "error": "Invalid timezone format"}), 400
+            
+            # Set timezone using timedatectl with sudo
+            result = subprocess.run(
+                ['sudo', '-n', 'timedatectl', 'set-timezone', timezone],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                # Try to sync time with NTP after timezone change (best effort)
+                try:
+                    subprocess.run(
+                        ['sudo', '-n', 'timedatectl', 'set-ntp', 'true'],
+                        capture_output=True,
+                        timeout=5
+                    )
+                    # Trigger an immediate time sync
+                    subprocess.run(
+                        ['sudo', '-n', 'systemctl', 'restart', 'systemd-timesyncd'],
+                        capture_output=True,
+                        timeout=5
+                    )
+                except Exception:
+                    pass  # Non-critical, continue anyway
+                
+                write_ui_event("System", f"Timezone set to {timezone}", duration_seconds=5)
+                return jsonify({
+                    "success": True,
+                    "message": f"Timezone set to {timezone}. Time display will update on next refresh.",
+                    "timezone": timezone,
+                    "note": "The time display should update automatically. If it doesn't, restart the ovbuddy service."
+                })
+            else:
+                error_msg = result.stderr.strip() or result.stdout.strip() or "Failed to set timezone"
+                return jsonify({"success": False, "error": error_msg}), 500
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
     @app.route('/api/update', methods=['POST'])
     def trigger_update():
         """Trigger a system update"""
@@ -5474,16 +5801,46 @@ def main(test_mode_arg=False, disable_web=False):
                 display = TerminalDisplayBackend()
                 break
     elif isinstance(display, HardwareLCDBackend):
-        # Initialize LCD display
+        # Initialize LCD display with retry logic to handle SPI/GPIO busy errors
         print("Initializing LCD display hardware...")
-        try:
-            display.clear(inverted=INVERTED)
-            print("LCD display initialized and cleared")
-            # Show loading screen immediately
-            render_loading_screen(display)
-        except Exception as e:
-            print(f"ERROR: Failed to initialize LCD display: {e}")
-            display = TerminalDisplayBackend()
+        max_retries = 5
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                # Clear the display first to ensure clean state
+                display.clear(inverted=INVERTED)
+                print("LCD display initialized and cleared")
+                # Show loading screen immediately
+                render_loading_screen(display)
+                break
+            except Exception as e:
+                error_msg = str(e)
+                if "GPIO busy" in error_msg or "busy" in error_msg.lower() or "SPI" in error_msg or "OSError" in error_msg:
+                    if attempt < max_retries - 1:
+                        print(f"LCD initialization error (attempt {attempt + 1}/{max_retries}): {e}")
+                        print(f"Waiting {retry_delay}s before retry...")
+                        time.sleep(retry_delay)
+                        # Try to recreate the display backend
+                        try:
+                            display = create_display_backend()
+                            if not isinstance(display, HardwareLCDBackend):
+                                print("Failed to recreate LCD backend, falling back to terminal")
+                                break
+                        except Exception as e2:
+                            print(f"Failed to recreate LCD backend: {e2}")
+                        continue
+                    print(f"ERROR: Failed to initialize LCD display after {max_retries} attempts: {e}")
+                    print("GPIO/SPI pins appear to be in use by another process.")
+                    print("Try: sudo systemctl stop ovbuddy && sleep 2 && sudo systemctl start ovbuddy")
+                    # Fall back to terminal output so the program keeps running.
+                    display = TerminalDisplayBackend()
+                    break
+                else:
+                    # Non-retryable error
+                    print(f"ERROR: Failed to initialize LCD display: {e}")
+                    display = TerminalDisplayBackend()
+                    break
     else:
         # Terminal/sim backends don't require initialization.
         if TEST_MODE:
@@ -5663,6 +6020,10 @@ def main(test_mode_arg=False, disable_web=False):
     is_first_refresh = True  # Track if this is the very first refresh attempt
     last_ap_active = None  # Track AP state transitions for cleaner logs
     last_ap_screen_key = None  # Avoid re-rendering AP QR screen unnecessarily
+    
+    # For eink displays: track previous data to avoid unnecessary updates
+    last_departures_hash = None  # Store a hashable representation of departures
+    last_error_msg = None  # Store previous error message
     try:
         while True:
             # If the web UI requested a one-shot on-screen message, show it first.
@@ -5897,10 +6258,45 @@ def main(test_mode_arg=False, disable_web=False):
                 # Continue to next iteration to fetch immediately
                 continue
             
-            render_board(departures, display, error_msg, 
-                        is_first_successful=is_first_successful,
-                        last_was_successful=last_was_successful,
-                        test_mode=test_mode_arg)
+            # For eink displays: only update if data actually changed
+            should_render = True
+            if DISPLAY_TYPE == "eink":
+                # Create a hashable representation of current departures
+                if departures:
+                    # Create a tuple of key departure info (line, destination, time)
+                    current_departures_hash = tuple(
+                        (
+                            format_line_number(dep).strip(),
+                            safe_ascii(clean_destination_name(dep.get("to", ""))),
+                            dep["stop"]["departure"][11:16] if dep.get("stop", {}).get("departure") else "",
+                            _format_delay_suffix(dep, for_terminal=False) or ""
+                        )
+                        for dep in departures[:MAX_DEPARTURES]
+                    )
+                else:
+                    current_departures_hash = None
+                
+                # Check if data has changed
+                data_changed = (
+                    current_departures_hash != last_departures_hash or
+                    error_msg != last_error_msg or
+                    refresh_triggered or
+                    is_first_successful
+                )
+                
+                if not data_changed:
+                    should_render = False
+                    print("eInk: Data unchanged, skipping display update")
+                else:
+                    # Update tracking variables
+                    last_departures_hash = current_departures_hash
+                    last_error_msg = error_msg
+            
+            if should_render:
+                render_board(departures, display, error_msg, 
+                            is_first_successful=is_first_successful,
+                            last_was_successful=last_was_successful,
+                            test_mode=test_mode_arg)
             
             # Mark that we've done at least one refresh
             if is_first_refresh:
@@ -5915,7 +6311,7 @@ def main(test_mode_arg=False, disable_web=False):
             last_was_successful = is_successful
             
             # For LCD displays, use higher refresh rate for smooth scrolling
-            # For eInk displays, only refresh when new data arrives
+            # For eInk displays with partial refresh, use low FPS (1-2 FPS) for smooth updates
             if DISPLAY_TYPE == "lcd" and LCD_REFRESH_RATE > 0:
                 # Calculate frame time for LCD refresh rate
                 frame_time = 1.0 / LCD_REFRESH_RATE
@@ -5939,8 +6335,31 @@ def main(test_mode_arg=False, disable_web=False):
                     
                     # Keep display responsive (for simulator)
                     display.pump()
+            elif DISPLAY_TYPE == "eink" and USE_PARTIAL_REFRESH and EINK_PARTIAL_INTERVAL > 0:
+                # eInk with partial refresh: use configured interval
+                frame_time = EINK_PARTIAL_INTERVAL
+                slept = 0
+                while slept < REFRESH_INTERVAL and not refresh_triggered:
+                    # Re-render display at low FPS for smooth partial updates
+                    render_board(departures, display, error_msg,
+                                is_first_successful=False,  # Not first after initial render
+                                last_was_successful=last_was_successful,
+                                test_mode=test_mode_arg)
+                    
+                    # Sleep for one frame
+                    time.sleep(frame_time)
+                    slept += frame_time
+                    
+                    # Check for trigger file during sleep
+                    if os.path.exists(trigger_file):
+                        refresh_triggered = True
+                        os.remove(trigger_file)
+                        break
+                    
+                    # Keep display responsive (for simulator)
+                    display.pump()
             else:
-                # eInk or low refresh rate: sleep normally, only render when new data arrives
+                # eInk without partial refresh or low refresh rate: sleep normally, only render when new data arrives
                 sleep_interval = 1  # Check every second
                 slept = 0
                 while slept < REFRESH_INTERVAL and not refresh_triggered:

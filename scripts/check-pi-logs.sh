@@ -21,3 +21,8 @@ echo "Recent logs (last 50 lines):"
 echo "----------------------------"
 ssh pi@"$PI_HOST" "sudo journalctl -u ovbuddy -n 50 --no-pager" 2>&1 | tail -50
 
+
+
+
+
+

@@ -63,3 +63,8 @@ To configure WiFi while in AP mode:
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#cannot-scan-for-wifi-networks-in-ap-mode) for more details.
 
 
+
+
+
+
+

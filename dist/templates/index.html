@@ -149,6 +149,14 @@
                         <div id="displayOutputSection" class="section-content">
                             <div class="two-column-grid">
                                 <div class="form-group">
+                                    <label for="display_type">Display Type <span class="help-icon" title="Hardware type: e-ink (monochrome) or LCD (color)">ⓘ</span></label>
+                                    <select id="display_type" name="display_type">
+                                        <option value="eink">E-Ink (Monochrome)</option>
+                                        <option value="lcd">LCD (Color)</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
                                     <label for="departure_layout">Layout <span class="help-icon" title="1 row: line, destination, time on one line; 2 rows: line and time on first row, destination on second">ⓘ</span></label>
                                     <select id="departure_layout" name="departure_layout">
                                         <option value="1row">1 Row (compact)</option>
@@ -173,28 +181,50 @@
                                     </label>
                                 </div>
                                 
-                                <div class="form-group">
-                                    <label class="checkbox-label">
-                                        <input type="checkbox" id="use_partial_refresh" name="use_partial_refresh">
-                                        Partial Refresh <span class="help-icon" title="Less flashing, may have ghosting (e-ink only)">ⓘ</span>
-                                    </label>
+                                <div class="form-group" data-display-type="eink">
+                                    <label for="refresh_mode">Refresh Mode <span class="help-icon" title="Full: complete refresh with flashing; Partial: faster with less flashing but may have ghosting; Burst: 5x partial refresh for better quality (e-ink only)">ⓘ</span></label>
+                                    <select id="refresh_mode" name="refresh_mode">
+                                        <option value="full">Full Refresh</option>
+                                        <option value="partial">Partial Refresh</option>
+                                        <option value="burst">Burst Refresh (5x Partial)</option>
+                                    </select>
                                 </div>
                                 
-                                <div class="form-group">
+                                <div class="form-group" data-display-type="lcd" data-display-type-alt="eink" data-requires-partial="true">
                                     <label class="checkbox-label">
                                         <input type="checkbox" id="destination_scroll" name="destination_scroll">
-                                        Scroll Destinations <span class="help-icon" title="Scrolling text like old train displays (LCD only)">ⓘ</span>
+                                        Scroll Destinations <span class="help-icon" title="Scrolling text like old train displays (LCD and e-ink with partial refresh)">ⓘ</span>
                                     </label>
                                 </div>
                                 
-                                <div class="form-group">
+                                <div class="form-group" data-display-type="lcd" data-display-type-alt="eink" data-requires-partial="true">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="force_scroll" name="force_scroll">
+                                        Force Scroll (Always) <span class="help-icon" title="Always scroll destinations even if text fits on display">ⓘ</span>
+                                    </label>
+                                </div>
+                                
+                                <div class="form-group" data-display-type="lcd" data-display-type-alt="eink" data-requires-partial="true">
                                     <label for="scroll_speed_factor">Scroll Speed <span class="help-icon" title="0.1-5.0, default 1.0. Higher = faster">ⓘ</span></label>
                                     <input type="number" id="scroll_speed_factor" name="scroll_speed_factor" min="0.1" max="5.0" step="0.1">
                                 </div>
                                 
-                                <div class="form-group">
+                                <div class="form-group" data-display-type="lcd">
                                     <label for="lcd_refresh_rate">LCD Refresh Rate (FPS) <span class="help-icon" title="1-60, default 30. Higher = smoother but more CPU">ⓘ</span></label>
                                     <input type="number" id="lcd_refresh_rate" name="lcd_refresh_rate" min="1" max="60" step="1">
+                                </div>
+                                
+                                <div class="form-group" data-display-type="eink" data-requires-partial="true">
+                                    <label for="eink_partial_interval">E-Ink Partial Update Interval <span class="help-icon" title="How often to update the e-ink display when using partial/burst refresh">ⓘ</span></label>
+                                    <select id="eink_partial_interval" name="eink_partial_interval">
+                                        <option value="0.5">Twice per second (0.5s)</option>
+                                        <option value="1">Every second (1s)</option>
+                                        <option value="2">Every 2 seconds (2s)</option>
+                                        <option value="5">Every 5 seconds (5s)</option>
+                                        <option value="10">Every 10 seconds (10s)</option>
+                                        <option value="15">Every 15 seconds (15s)</option>
+                                        <option value="20">Every 20 seconds (20s)</option>
+                                    </select>
                                 </div>
                             </div>
                         </div>
@@ -236,6 +266,17 @@
                                         <input type="checkbox" id="display_ap_password" name="display_ap_password">
                                         Display password on screen in AP mode <span class="help-icon" title="Show password on e-ink display (useful for initial setup)">ⓘ</span>
                                     </label>
+                                </div>
+                                
+                                <div class="form-group span-2">
+                                    <label for="system_timezone">System Timezone <span class="help-icon" title="Set the system timezone/region (e.g., Europe/Zurich, America/New_York)">ⓘ</span></label>
+                                    <div style="display: flex; gap: 10px; align-items: center;">
+                                        <input type="text" id="system_timezone" name="system_timezone" placeholder="Europe/Zurich" list="timezone-list" style="flex: 1;" onkeydown="if(event.key === 'Enter') saveTimezone();">
+                                        <datalist id="timezone-list"></datalist>
+                                        <button type="button" id="loadTimezoneButton" onclick="loadTimezone()" class="secondary" style="white-space: nowrap;">Load Current</button>
+                                        <button type="button" id="saveTimezoneButton" onclick="saveTimezone()" style="white-space: nowrap;">Set Timezone</button>
+                                    </div>
+                                    <div class="help-text" id="timezoneStatus" style="margin-top: 5px;">Loading timezone...</div>
                                 </div>
                             </div>
                         </div>

@@ -751,6 +751,13 @@ ${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reboot
 ${PI_USER} ALL=(ALL) NOPASSWD: /sbin/reboot
 ${PI_USER} ALL=(ALL) NOPASSWD: /usr/sbin/reboot
 
+# Allow timezone configuration
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-timezone *
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl show
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl list-timezones
+${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-ntp *
+${PI_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart systemd-timesyncd
+
 # Allow network configuration commands
 ${PI_USER} ALL=(ALL) NOPASSWD: /sbin/iwlist * scan
 ${PI_USER} ALL=(ALL) NOPASSWD: /sbin/wpa_cli *
@@ -867,6 +874,83 @@ else
         install_or_refresh_sudoers
     else
         echo -e "${GREEN}  ✓ Sudoers rules already include reboot/update/cp permissions${NC}"
+    fi
+fi
+
+# Ensure web_settings.json exists with shutdown module enabled (required for timezone functionality)
+echo ""
+echo -e "${YELLOW}Ensuring web_settings.json is configured...${NC}"
+WEB_SETTINGS_RESULT=$(sshpass -p "$PI_PASSWORD" ssh $SSH_OPTS "${PI_USER}@${PI_SSH_HOST}" "
+    WEB_SETTINGS_FILE=\"${REMOTE_DIR}/web_settings.json\"
+    
+    # Default settings with all modules enabled (especially shutdown for timezone)
+    DEFAULT_SETTINGS='{
+  \"modules\": {
+    \"web_auth_basic\": true,
+    \"config_json\": true,
+    \"systemctl_status\": true,
+    \"iwconfig\": true,
+    \"shutdown\": true
+  }
+}'
+    
+    # If file doesn't exist, create it with defaults
+    if [ ! -f \"\$WEB_SETTINGS_FILE\" ]; then
+        echo \"\$DEFAULT_SETTINGS\" > \"\$WEB_SETTINGS_FILE\"
+        echo 'CREATED'
+    else
+        # File exists - ensure shutdown is enabled
+        # Use Python to safely merge settings (preserves existing, ensures shutdown=true)
+        python3 << PYEOF
+import json
+import sys
+import os
+
+settings_file = '${REMOTE_DIR}/web_settings.json'
+default_modules = {
+    'web_auth_basic': True,
+    'config_json': True,
+    'systemctl_status': True,
+    'iwconfig': True,
+    'shutdown': True
+}
+
+try:
+    with open(settings_file, 'r') as f:
+        data = json.load(f)
+except (json.JSONDecodeError, FileNotFoundError):
+    data = {}
+
+if 'modules' not in data:
+    data['modules'] = {}
+
+# Merge with defaults, ensuring shutdown is enabled
+for key, default_value in default_modules.items():
+    if key not in data['modules']:
+        data['modules'][key] = default_value
+    elif key == 'shutdown' and not data['modules'][key]:
+        # Force shutdown to be enabled
+        data['modules'][key] = True
+
+# Write back
+with open(settings_file, 'w') as f:
+    json.dump(data, f, indent=2)
+
+print('UPDATED' if 'shutdown' in data.get('modules', {}) and data['modules']['shutdown'] else 'NO_CHANGE')
+PYEOF
+    fi
+" 2>&1)
+
+if echo "$WEB_SETTINGS_RESULT" | grep -q "CREATED"; then
+    echo -e "${GREEN}  ✓ web_settings.json created with default settings (shutdown enabled)${NC}"
+elif echo "$WEB_SETTINGS_RESULT" | grep -q "UPDATED"; then
+    echo -e "${GREEN}  ✓ web_settings.json updated to ensure shutdown module is enabled${NC}"
+elif echo "$WEB_SETTINGS_RESULT" | grep -q "NO_CHANGE"; then
+    echo -e "${GREEN}  ✓ web_settings.json already exists with shutdown enabled${NC}"
+else
+    echo -e "${YELLOW}  ⚠ Could not verify/configure web_settings.json${NC}"
+    if [ -n "$WEB_SETTINGS_RESULT" ]; then
+        echo -e "${YELLOW}     Note: This is non-critical - web_settings.json will be auto-created on first run${NC}"
     fi
 fi
 

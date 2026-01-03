@@ -10,3 +10,8 @@ echo ""
 
 ssh "${PI_USER}@${PI_HOST}" "sudo journalctl -u ovbuddy -n 50 --no-pager"
 
+
+
+
+
+

@@ -752,6 +752,7 @@ button.warning:hover {
     vertical-align: middle;
     transition: all 0.2s ease;
     border: 1px solid var(--border-color);
+    position: relative;
 }
 
 .help-icon:hover {
@@ -759,6 +760,58 @@ button.warning:hover {
     color: var(--bg-primary);
     transform: scale(1.1);
     box-shadow: 0 0 8px var(--primary-color);
+}
+
+/* Tooltip */
+.help-icon::after {
+    content: attr(title);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    background-color: rgba(0, 0, 0, 0.95);
+    color: var(--primary-color);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    max-width: 250px;
+    word-wrap: break-word;
+    white-space: normal;
+    text-align: left;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 1000;
+    margin-bottom: 4px;
+    box-shadow: 0 2px 8px rgba(0, 255, 0, 0.3);
+    border: 1px solid var(--primary-color);
+}
+
+.help-icon::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-4px);
+    border: 5px solid transparent;
+    border-top-color: rgba(0, 0, 0, 0.95);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    z-index: 1001;
+}
+
+.help-icon:hover::after,
+.help-icon:hover::before {
+    opacity: 1;
+}
+
+.help-icon:hover::after {
+    transform: translateX(-50%) translateY(-12px);
+}
+
+.help-icon:hover::before {
+    transform: translateX(-50%) translateY(-4px);
 }
 
 /* Responsive Design */

@@ -155,6 +155,63 @@ function setLoading(elementId, isLoading) {
     }
 }
 
+function updateDisplayTypeVisibility(displayType) {
+    // Show/hide fields based on display type
+    const einkFields = document.querySelectorAll('[data-display-type="eink"]');
+    const lcdFields = document.querySelectorAll('[data-display-type="lcd"]');
+    const dualFields = document.querySelectorAll('[data-display-type-alt]');
+    
+    einkFields.forEach(field => {
+        const requiresPartial = field.hasAttribute('data-requires-partial');
+        const refreshMode = document.getElementById('refresh_mode')?.value || 'full';
+        const partialEnabled = (refreshMode === 'partial' || refreshMode === 'burst');
+        
+        if (requiresPartial) {
+            // Only show if eink AND partial/burst refresh is enabled
+            field.style.display = (displayType === 'eink' && partialEnabled) ? '' : 'none';
+        } else {
+            // Show if eink
+            field.style.display = (displayType === 'eink') ? '' : 'none';
+        }
+    });
+    
+    lcdFields.forEach(field => {
+        field.style.display = (displayType === 'lcd') ? '' : 'none';
+    });
+    
+    // Handle fields that can show for both LCD and eink (with conditions)
+    dualFields.forEach(field => {
+        const altType = field.getAttribute('data-display-type-alt');
+        const requiresPartial = field.hasAttribute('data-requires-partial');
+        const refreshMode = document.getElementById('refresh_mode')?.value || 'full';
+        const partialEnabled = (refreshMode === 'partial' || refreshMode === 'burst');
+        
+        if (displayType === 'lcd') {
+            field.style.display = '';
+        } else if (displayType === altType && requiresPartial) {
+            field.style.display = partialEnabled ? '' : 'none';
+        } else {
+            field.style.display = 'none';
+        }
+    });
+}
+
+// Update visibility when refresh mode changes
+function updateRefreshModeVisibility() {
+    const displayTypeSelect = document.getElementById('display_type');
+    if (displayTypeSelect) {
+        updateDisplayTypeVisibility(displayTypeSelect.value);
+    }
+}
+
+// Helper function to get LCD refresh rate based on display type
+function getLcdRefreshRate() {
+    // For LCD, use the direct FPS input
+    const lcdFps = parseInt(document.getElementById('lcd_refresh_rate')?.value) || 30;
+    console.log(`LCD refresh rate: ${lcdFps} FPS`);
+    return lcdFps;
+}
+
 // Configuration Management
 function loadConfiguration() {
     console.log('Loading configuration...');
@@ -186,6 +243,13 @@ function loadConfiguration() {
             
             document.getElementById('max_departures').value = data.max_departures || 10;
             document.getElementById('inverted').checked = data.inverted || false;
+            // Display type
+            const displayTypeSelect = document.getElementById('display_type');
+            if (displayTypeSelect) {
+                displayTypeSelect.value = data.display_type || 'eink';
+                // Update visibility of display-type-specific fields
+                updateDisplayTypeVisibility(data.display_type || 'eink');
+            }
             // Orientation (new)
             const orientationSelect = document.getElementById('display_orientation');
             if (orientationSelect) {
@@ -197,9 +261,51 @@ function loadConfiguration() {
                 departureLayoutSelect.value = data.departure_layout || '1row';
             }
             document.getElementById('destination_scroll').checked = data.destination_scroll || false;
+            document.getElementById('force_scroll').checked = data.force_scroll || false;
             document.getElementById('scroll_speed_factor').value = data.scroll_speed_factor || 1.0;
             document.getElementById('lcd_refresh_rate').value = data.lcd_refresh_rate || 30;
-            document.getElementById('use_partial_refresh').checked = data.use_partial_refresh || false;
+            
+            // Refresh mode (new) with backward compatibility - set this FIRST
+            const refreshModeSelect = document.getElementById('refresh_mode');
+            if (refreshModeSelect) {
+                if (data.refresh_mode) {
+                    refreshModeSelect.value = data.refresh_mode;
+                } else {
+                    // Backward compatibility: convert use_partial_refresh to refresh_mode
+                    refreshModeSelect.value = data.use_partial_refresh ? 'partial' : 'full';
+                }
+            }
+            
+            // Update visibility after setting refresh mode and display type
+            updateDisplayTypeVisibility(data.display_type || 'eink');
+            
+            // E-ink partial interval: load directly from config
+            const einkIntervalSelect = document.getElementById('eink_partial_interval');
+            if (einkIntervalSelect) {
+                const displayType = data.display_type || 'eink';
+                const refreshMode = refreshModeSelect?.value || 'full';
+                const partialEnabled = (refreshMode === 'partial' || refreshMode === 'burst');
+                
+                if (displayType === 'eink' && partialEnabled) {
+                    // Use stored interval or default to 2 seconds
+                    const interval = data.eink_partial_interval || 2.0;
+                    // Find closest option
+                    const options = [0.5, 1, 2, 5, 10, 15, 20];
+                    let closest = options[0];
+                    let minDiff = Math.abs(interval - closest);
+                    for (let opt of options) {
+                        const diff = Math.abs(interval - opt);
+                        if (diff < minDiff) {
+                            minDiff = diff;
+                            closest = opt;
+                        }
+                    }
+                    einkIntervalSelect.value = closest.toString();
+                } else {
+                    // Default to 2 seconds if not applicable
+                    einkIntervalSelect.value = '2';
+                }
+            }
             document.getElementById('auto_update').checked = data.auto_update !== undefined ? data.auto_update : true;
             document.getElementById('ap_fallback_enabled').checked = data.ap_fallback_enabled !== undefined ? data.ap_fallback_enabled : true;
             document.getElementById('ap_ssid').value = data.ap_ssid || 'OVBuddy';
@@ -356,13 +462,24 @@ function saveConfiguration(event) {
             .filter(s => s),
         max_departures: parseInt(document.getElementById('max_departures').value),
         inverted: document.getElementById('inverted').checked,
+        display_type: (document.getElementById('display_type')?.value || 'eink'),
         display_orientation: (document.getElementById('display_orientation')?.value || 'bottom'),
         departure_layout: (document.getElementById('departure_layout')?.value || '1row'),
-        destination_scroll: document.getElementById('destination_scroll').checked,
-        scroll_speed_factor: parseFloat(document.getElementById('scroll_speed_factor').value) || 1.0,
-        lcd_refresh_rate: parseInt(document.getElementById('lcd_refresh_rate').value) || 30,
-        use_partial_refresh: document.getElementById('use_partial_refresh').checked,
-        auto_update: document.getElementById('auto_update').checked,
+        destination_scroll: document.getElementById('destination_scroll')?.checked || false,
+        force_scroll: document.getElementById('force_scroll')?.checked || false,
+        scroll_speed_factor: parseFloat(document.getElementById('scroll_speed_factor')?.value) || 1.0,
+        lcd_refresh_rate: getLcdRefreshRate(),
+        eink_partial_interval: (() => {
+            const einkIntervalSelect = document.getElementById('eink_partial_interval');
+            if (einkIntervalSelect) {
+                const interval = parseFloat(einkIntervalSelect.value) || 2.0;
+                console.log('E-ink partial interval:', interval, 'seconds');
+                return interval;
+            }
+            return 2.0; // Default
+        })(),
+        refresh_mode: (document.getElementById('refresh_mode')?.value || 'full'),
+        auto_update: document.getElementById('auto_update')?.checked || false,
         ap_fallback_enabled: document.getElementById('ap_fallback_enabled').checked,
         ap_ssid: document.getElementById('ap_ssid').value,
         ap_password: document.getElementById('ap_password').value,
@@ -1275,6 +1392,119 @@ function rebootPi() {
     });
 }
 
+// Timezone Management
+function loadTimezone() {
+    const timezoneInput = document.getElementById('system_timezone');
+    const timezoneStatus = document.getElementById('timezoneStatus');
+    const loadButton = document.getElementById('loadTimezoneButton');
+    
+    if (loadButton) {
+        loadButton.disabled = true;
+        loadButton.textContent = 'Loading...';
+    }
+    if (timezoneStatus) {
+        timezoneStatus.textContent = 'Loading timezone...';
+    }
+    
+    fetch('/api/timezone')
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (timezoneInput) {
+                    timezoneInput.value = data.timezone || '';
+                }
+                if (timezoneStatus) {
+                    timezoneStatus.textContent = `Current: ${data.timezone || 'Unknown'} [OK]`;
+                }
+                
+                // Populate datalist with available timezones
+                const datalist = document.getElementById('timezone-list');
+                if (datalist && data.available_timezones && Array.isArray(data.available_timezones)) {
+                    datalist.innerHTML = '';
+                    data.available_timezones.forEach(tz => {
+                        const option = document.createElement('option');
+                        option.value = tz;
+                        datalist.appendChild(option);
+                    });
+                }
+                
+                showMessage('Timezone loaded [OK]', 'success');
+            } else {
+                if (timezoneStatus) {
+                    timezoneStatus.textContent = `Error: ${data.error || 'Failed to load timezone'} [FAIL]`;
+                }
+                showMessage('Error: ' + (data.error || 'Failed to load timezone'), 'error');
+            }
+        })
+        .catch(err => {
+            console.error('Error loading timezone:', err);
+            if (timezoneStatus) {
+                timezoneStatus.textContent = 'Error loading timezone [FAIL]';
+            }
+            showMessage('Error loading timezone', 'error');
+        })
+        .finally(() => {
+            if (loadButton) {
+                loadButton.disabled = false;
+                loadButton.textContent = 'Load Current';
+            }
+        });
+}
+
+function saveTimezone() {
+    const timezoneInput = document.getElementById('system_timezone');
+    const timezoneStatus = document.getElementById('timezoneStatus');
+    
+    if (!timezoneInput) {
+        return;
+    }
+    
+    const timezone = timezoneInput.value.trim();
+    if (!timezone) {
+        showMessage('Please enter a timezone', 'error');
+        return;
+    }
+    
+    if (!confirm(`Set system timezone to "${timezone}"?`)) {
+        return;
+    }
+    
+    if (timezoneStatus) {
+        timezoneStatus.textContent = 'Setting timezone...';
+    }
+    
+    fetch('/api/timezone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timezone: timezone })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            if (timezoneStatus) {
+                timezoneStatus.textContent = `Set to: ${data.timezone} [OK]`;
+            }
+            let message = data.message || 'Timezone set successfully [OK]';
+            if (data.note) {
+                message += ' ' + data.note;
+            }
+            showMessage(message, 'success');
+        } else {
+            if (timezoneStatus) {
+                timezoneStatus.textContent = `Error: ${data.error || 'Failed to set timezone'} [FAIL]`;
+            }
+            showMessage('Error: ' + (data.error || 'Failed to set timezone'), 'error');
+        }
+    })
+    .catch(err => {
+        console.error('Error setting timezone:', err);
+        if (timezoneStatus) {
+            timezoneStatus.textContent = 'Error setting timezone [FAIL]';
+        }
+        showMessage('Error setting timezone', 'error');
+    });
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     console.log('OVBuddy Terminal Interface initialized');
@@ -1301,6 +1531,12 @@ document.addEventListener('DOMContentLoaded', function() {
         applyModuleVisibility();
         syncHeaderToggles();
         initModulesFromToggles();
+
+        // Set initial display type visibility (default to eink if not set)
+        const displayTypeSelect = document.getElementById('display_type');
+        if (displayTypeSelect) {
+            updateDisplayTypeVisibility(displayTypeSelect.value || 'eink');
+        }
 
         maybeInitEnabledModules();
 
@@ -1338,6 +1574,18 @@ function maybeInitEnabledModules() {
         if (configForm) {
             configForm.addEventListener('submit', saveConfiguration);
         }
+        // Add event listener for display_type changes
+        const displayTypeSelect = document.getElementById('display_type');
+        if (displayTypeSelect) {
+            displayTypeSelect.addEventListener('change', function() {
+                updateDisplayTypeVisibility(this.value);
+            });
+        }
+        // Add event listener for refresh mode select changes
+        const refreshModeSelect = document.getElementById('refresh_mode');
+        if (refreshModeSelect) {
+            refreshModeSelect.addEventListener('change', updateRefreshModeVisibility);
+        }
     }
 
     // web auth
@@ -1364,5 +1612,10 @@ function maybeInitEnabledModules() {
         if (sshCb) {
             sshCb.addEventListener('change', onSshBootToggleChanged);
         }
+    }
+
+    // timezone (requires shutdown module)
+    if (moduleEnabled('shutdown')) {
+        loadTimezone();
     }
 }
