@@ -691,7 +691,7 @@ WEB_SETTINGS_LOCK = threading.Lock()
 DEFAULT_WEB_SETTINGS = {
     "modules": {
         # When disabled: the web auth panel is collapsed and Flask does NOT require Basic Auth.
-        "web_auth_basic": True,
+        "web_auth_basic": False,
         # When disabled: config.json panel is collapsed and DEFAULT_CONFIG values are used (config.json is ignored).
         "config_json": True,
         # When disabled: systemctl status panel is collapsed and /api/services/* is disabled.
@@ -793,9 +793,9 @@ DEFAULT_CONFIG = {
     # Legacy boolean; still read/written for backward compatibility.
     "use_partial_refresh": False,
     # Departure layout: "1row" (default, single row per connection) or "2row" (two rows per connection)
-    "departure_layout": "2row",
+    "departure_layout": "1row",
     # Destination scroll: enable scrolling destination text from right to left (LCD, or e-ink with partial refresh; works in both 1-row and 2-row modes)
-    "destination_scroll": True,
+    "destination_scroll": False,
     # Force scroll: always scroll destinations even if text fits on display (default False)
     # When False, scrolling only happens if text is wider than available space
     "force_scroll": False,
