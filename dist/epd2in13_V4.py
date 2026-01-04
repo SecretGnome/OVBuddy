@@ -29,6 +29,7 @@
 
 
 import logging
+import time
 import epdconfig
 
 # Display resolution
@@ -93,8 +94,13 @@ class EPD:
     '''
     def ReadBusy(self):
         logger.debug("e-Paper busy")
+        timeout = 10  # 10 second timeout
+        start_time = time.time()
         while(epdconfig.digital_read(self.busy_pin) == 1):      # 0: idle, 1: busy
-            epdconfig.delay_ms(10)  
+            epdconfig.delay_ms(10)
+            if time.time() - start_time > timeout:
+                logger.error(f"e-Paper busy timeout after {timeout}s - display may be in bad state")
+                raise TimeoutError(f"eInk display BUSY pin stuck HIGH for {timeout}s - display hardware may need power cycle")
         logger.debug("e-Paper busy release")
 
     '''
